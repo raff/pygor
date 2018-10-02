@@ -37,7 +37,61 @@ func unknown(typ string, v interface{}) string {
 	return msg
 }
 
-func strBoolOp(op ast.BoolOpNumber) string {
+// Indent implements print functions with indentation
+type Indent string
+
+func (indent Indent) Incr() Indent {
+	return indent + Indent("  ")
+}
+
+func (indent Indent) Decr() Indent {
+	return Indent(indent[2:])
+}
+
+func (indent Indent) Print(args ...interface{}) {
+	fmt.Print(indent)
+	fmt.Print(args...)
+}
+
+func (indent Indent) Println(args ...interface{}) {
+	fmt.Print(indent)
+	fmt.Println(args...)
+}
+
+func (indent Indent) Printf(sfmt string, args ...interface{}) {
+	fmt.Print(indent)
+	fmt.Printf(sfmt, args...)
+}
+
+var NoIndent Indent
+
+type ScopeType int
+
+const (
+	SModule ScopeType = iota
+	SClass
+	SMethod
+	SFunction
+)
+
+type Scope struct {
+	Name   string
+	Type   ScopeType
+	indent Indent
+
+	next *Scope
+	prev *Scope
+}
+
+func (s *Scope) Incr() {
+	s.indent = s.indent.Incr()
+}
+
+func (s *Scope) Decr() {
+	s.indent = s.indent.Decr()
+}
+
+func (s *Scope) strBoolOp(op ast.BoolOpNumber) string {
 	switch op {
 	case ast.And:
 		return "&&"
@@ -49,7 +103,7 @@ func strBoolOp(op ast.BoolOpNumber) string {
 	return unknown("BOOLOP", op.String())
 }
 
-func strUnary(op ast.UnaryOpNumber) string {
+func (s *Scope) strUnary(op ast.UnaryOpNumber) string {
 	switch op {
 	case ast.Not:
 		return "!"
@@ -64,7 +118,7 @@ func strUnary(op ast.UnaryOpNumber) string {
 	return unknown("UNARY", op.String())
 }
 
-func strOp(op ast.OperatorNumber) string {
+func (s *Scope) strOp(op ast.OperatorNumber) string {
 	switch op {
 	case ast.Add:
 		return "+"
@@ -95,7 +149,7 @@ func strOp(op ast.OperatorNumber) string {
 	return unknown("OP", op.String())
 }
 
-func strCmpOp(op ast.CmpOp) string {
+func (s *Scope) strCmpOp(op ast.CmpOp) string {
 	switch op {
 	case ast.Eq:
 		return "=="
@@ -122,32 +176,32 @@ func strCmpOp(op ast.CmpOp) string {
 	return unknown("CMPOP", op.String())
 }
 
-func compOps(ops []ast.CmpOp, exprs []ast.Expr) string {
+func (s *Scope) compOps(ops []ast.CmpOp, exprs []ast.Expr) string {
 	if len(ops) == 0 {
 		return ""
 	}
 
-	return fmt.Sprintf(" %v %v", strCmpOp(ops[0]), strExpr(exprs[0])) + compOps(ops[1:], exprs[1:])
+	return fmt.Sprintf(" %v %v", s.strCmpOp(ops[0]), s.strExpr(exprs[0])) + s.compOps(ops[1:], exprs[1:])
 }
 
-func strSlice(name ast.Expr, value ast.Slicer) string {
-	ret := fmt.Sprintf("%v[", strExpr(name))
+func (s *Scope) strSlice(name ast.Expr, value ast.Slicer) string {
+	ret := fmt.Sprintf("%v[", s.strExpr(name))
 
-	switch s := value.(type) {
+	switch sl := value.(type) {
 	case *ast.Slice:
-		if s.Lower != nil {
-			ret += strExpr(s.Lower)
+		if sl.Lower != nil {
+			ret += s.strExpr(sl.Lower)
 		}
 		ret += ":"
-		if s.Upper != nil {
-			ret += strExpr(s.Lower)
+		if sl.Upper != nil {
+			ret += s.strExpr(sl.Lower)
 		}
-		if s.Step != nil {
-			ret += ":" + strExpr(s.Lower)
+		if sl.Step != nil {
+			ret += ":" + s.strExpr(sl.Lower)
 		}
 
 	case *ast.Index:
-		ret += strExpr(s.Value)
+		ret += s.strExpr(sl.Value)
 
 	case *ast.ExtSlice:
 		panic("ExtSlice not implemented")
@@ -156,7 +210,7 @@ func strSlice(name ast.Expr, value ast.Slicer) string {
 	return ret + "]"
 }
 
-func strExpr(expr interface{}) string {
+func (s *Scope) strExpr(expr interface{}) string {
 	if verbose {
 		fmt.Printf("XXX %T %#v\n\n", expr, expr)
 	}
@@ -165,28 +219,28 @@ func strExpr(expr interface{}) string {
 	case []ast.Expr:
 		var exprs []string
 		for _, e := range v {
-			exprs = append(exprs, strExpr(e))
+			exprs = append(exprs, s.strExpr(e))
 		}
 		return strings.Join(exprs, ", ")
 
 	case []*ast.Keyword:
 		var kwords []string
 		for _, k := range v {
-			kwords = append(kwords, fmt.Sprintf("%v=%v", strId(k.Arg), strExpr(k.Value)))
+			kwords = append(kwords, fmt.Sprintf("%v=%v", strId(k.Arg), s.strExpr(k.Value)))
 		}
 		return strings.Join(kwords, ", ")
 
 	case *ast.Tuple:
 		var exprs []string
 		for _, e := range v.Elts {
-			exprs = append(exprs, strExpr(e))
+			exprs = append(exprs, s.strExpr(e))
 		}
 		return "list{" + strings.Join(exprs, ", ") + "}"
 
 	case *ast.List:
 		var exprs []string
 		for _, e := range v.Elts {
-			exprs = append(exprs, strExpr(e))
+			exprs = append(exprs, s.strExpr(e))
 		}
 		return "array{" + strings.Join(exprs, ", ") + "}"
 
@@ -215,94 +269,45 @@ func strExpr(expr interface{}) string {
 
 	case *ast.UnaryOp:
 		if v.Op == ast.Invert {
-			return fmt.Sprintf("-(%v+1)", strUnary(v.Op), strExpr(v.Operand))
+			return fmt.Sprintf("-(%v+1)", s.strUnary(v.Op), s.strExpr(v.Operand))
 		} else {
-			return fmt.Sprintf("%v%v", strUnary(v.Op), strExpr(v.Operand))
+			return fmt.Sprintf("%v%v", s.strUnary(v.Op), s.strExpr(v.Operand))
 		}
 
 	case *ast.BoolOp:
 		var bexprs []string
 		for _, e := range v.Values {
-			bexprs = append(bexprs, strExpr(e))
+			bexprs = append(bexprs, s.strExpr(e))
 		}
-		return strings.Join(bexprs, " "+strBoolOp(v.Op)+" ")
+		return strings.Join(bexprs, " "+s.strBoolOp(v.Op)+" ")
 
 	case *ast.BinOp:
-		return fmt.Sprintf("%v %v %v", strExpr(v.Left), strOp(v.Op), strExpr(v.Right))
+		return fmt.Sprintf("%v %v %v", s.strExpr(v.Left), s.strOp(v.Op), s.strExpr(v.Right))
 
 	case *ast.Compare:
-		return strExpr(v.Left) + compOps(v.Ops, v.Comparators)
+		return s.strExpr(v.Left) + s.compOps(v.Ops, v.Comparators)
 
 	case *ast.Name:
 		return string(v.Id)
 
 	case *ast.Attribute:
-		return convertName(strExpr(v.Value) + "." + string(v.Attr))
+		return convertName(s.strExpr(v.Value) + "." + string(v.Attr))
 
 	case *ast.Subscript:
-		return strSlice(v.Value, v.Slice)
+		return s.strSlice(v.Value, v.Slice)
 
 	case *ast.Call:
-		return strCall(v)
+		return s.strCall(v)
 
 	case *ast.Lambda:
-		return fmt.Sprintf("func(%v) {  return %s; }", strFunctionArguments(v.Args), strExpr(v.Body))
+		return fmt.Sprintf("func(%v) {  return %s; }", s.strFunctionArguments(v.Args), s.strExpr(v.Body))
 
 	case *ast.IfExp:
 		return fmt.Sprintf("func() { if %v { return %v } else { return %v }}()",
-			strExpr(v.Test), strExpr(v.Body), strExpr(v.Orelse))
+			s.strExpr(v.Test), s.strExpr(v.Body), s.strExpr(v.Orelse))
 	}
 
 	return unknown("EXPR", expr)
-}
-
-// an interfact to "print" stuff
-type Printable interface {
-	Print(args ...interface{})
-	Println(args ...interface{})
-	Printf(sfmt string, args ...interface{})
-}
-
-// Indent implements a Printable, indenting the output
-type Indent string
-
-func (indent Indent) Incr() Indent {
-	return indent + Indent("  ")
-}
-
-func (indent Indent) Print(args ...interface{}) {
-	fmt.Print(indent)
-	fmt.Print(args...)
-}
-
-func (indent Indent) Println(args ...interface{}) {
-	fmt.Print(indent)
-	fmt.Println(args...)
-}
-
-func (indent Indent) Printf(sfmt string, args ...interface{}) {
-	fmt.Print(indent)
-	fmt.Printf(sfmt, args...)
-}
-
-var NoIndent Indent
-
-// PrintableString implements a Printble that writes to a strings (actually strings.Builder)
-type PrintableString strings.Builder
-
-func (s PrintableString) Print(args ...interface{}) {
-	sb := strings.Builder(s)
-	fmt.Fprint(&sb, args...)
-}
-
-func (s PrintableString) Println(args ...interface{}) {
-	sb := strings.Builder(s)
-	fmt.Fprintln(&sb, args...)
-}
-
-func (s PrintableString) Printf(sfmt string, args ...interface{}) {
-	sb := strings.Builder(s)
-	fmt.Fprintf(&sb, sfmt, args...)
 }
 
 func convertName(s string) string {
@@ -333,7 +338,7 @@ func strId(id ast.Identifier) string {
 	return convertName(string(id))
 }
 
-func strFunctionArguments(args *ast.Arguments) string {
+func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 	if args == nil {
 		return ""
 	}
@@ -346,7 +351,7 @@ func strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		if arg.Annotation != nil {
-			buf.WriteString(strExpr(arg.Annotation))
+			buf.WriteString(s.strExpr(arg.Annotation))
 			buf.WriteString(" ")
 		}
 
@@ -359,13 +364,13 @@ func strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		if arg.Annotation != nil {
-			buf.WriteString(strExpr(arg.Annotation))
+			buf.WriteString(s.strExpr(arg.Annotation))
 			buf.WriteString(" ")
 		}
 
 		buf.WriteString(strId(arg.Arg))
 		buf.WriteString("=")
-		buf.WriteString(strExpr(args.KwDefaults[i]))
+		buf.WriteString(s.strExpr(args.KwDefaults[i]))
 	}
 
 	if args.Vararg != nil {
@@ -391,21 +396,36 @@ func strFunctionArguments(args *ast.Arguments) string {
 	return buf.String()
 }
 
-func strCall(call *ast.Call) string {
+func (s *Scope) strCall(call *ast.Call) string {
 	var buf strings.Builder
 
-	cfunc := strExpr(call.Func)
+	cfunc := s.strExpr(call.Func)
 
 	switch {
 	case cfunc == "print":
 		cfunc = "fmt.Println" // check for print parameters, could be fmt.Print, fmt.Fprint, etc.
 
+	case cfunc == "open":
+		cfunc = "os.Open"
+
+	case strings.HasSuffix(cfunc, ".read"):
+		cfunc = strings.TrimSuffix(cfunc, ".read") + ".Read"
+
+	case strings.HasSuffix(cfunc, ".write"):
+		cfunc = strings.TrimSuffix(cfunc, ".write") + ".Write"
+
+	case strings.HasSuffix(cfunc, ".close"):
+		cfunc = strings.TrimSuffix(cfunc, ".close") + ".Close"
+
+	case strings.HasSuffix(cfunc, ".items"):
+		return strings.TrimSuffix(cfunc, ".items")
+
 	case strings.HasSuffix(cfunc, ".upper"): // check for arguments
-		cfunc = strings.TrimSuffix(cfunc, "upper")
+		cfunc = strings.TrimSuffix(cfunc, ".upper")
 		return fmt.Sprintf("strings.ToUpper(%v)", cfunc)
 
 	case strings.HasSuffix(cfunc, ".lower"): // check for arguments
-		cfunc = strings.TrimSuffix(cfunc, "lower")
+		cfunc = strings.TrimSuffix(cfunc, ".lower")
 		return fmt.Sprintf("strings.ToLower(%v)", cfunc)
 
 	case strings.HasSuffix(cfunc, ".startswith"):
@@ -418,52 +438,67 @@ func strCall(call *ast.Call) string {
 	buf.WriteString(cfunc)
 	buf.WriteString("(")
 
-	for i, arg := range call.Args {
-		if i > 0 {
+	args := false
+
+	for _, arg := range call.Args {
+		if args {
 			buf.WriteString(", ")
+		} else {
+			args = true
 		}
 
-		buf.WriteString(strExpr(arg))
+		buf.WriteString(s.strExpr(arg))
 	}
 
 	if len(call.Keywords) > 0 {
-		if buf.Len() > 0 {
+		if args {
 			buf.WriteString(", ")
+		} else {
+			args = true
 		}
 
-		buf.WriteString(strExpr(call.Keywords))
+		buf.WriteString(s.strExpr(call.Keywords))
 	}
 
 	if call.Starargs != nil {
-		if buf.Len() > 0 {
+		if args {
 			buf.WriteString(", ")
+		} else {
+			args = true
 		}
 
 		buf.WriteString("...")
-		buf.WriteString(strExpr(call.Starargs))
+		buf.WriteString(s.strExpr(call.Starargs))
 	}
 
 	if call.Kwargs != nil {
-		if buf.Len() > 0 {
+		if args {
 			buf.WriteString(", ")
+		} else {
+			args = true
 		}
 
 		buf.WriteString("...")
-		buf.WriteString(strExpr(call.Kwargs))
+		buf.WriteString(s.strExpr(call.Kwargs))
 	}
 
 	buf.WriteString(")")
 	return buf.String()
 }
 
-func printBody(indent Indent, body []ast.Stmt, nested bool) {
+func (s *Scope) printBody(body []ast.Stmt, nested bool) {
+	if !nested {
+		s.Incr()
+		defer s.Decr()
+	}
+
 	for _, stmt := range body {
 		if expr, ok := stmt.(*ast.ExprStmt); ok {
-			if s, ok := expr.Value.(*ast.Str); ok {
+			if str, ok := expr.Value.(*ast.Str); ok {
 				// a top level string expression is a __doc__ string
-				indent.Println("/*")
-				indent.Println(s.S)
-				indent.Println("*/")
+				s.indent.Println("/*")
+				s.indent.Println(str.S)
+				s.indent.Println("*/")
 				continue
 			}
 		}
@@ -475,75 +510,81 @@ func printBody(indent Indent, body []ast.Stmt, nested bool) {
 
 			switch v := node.(type) {
 			case *ast.Str:
-				indent.Printf("%q", v.S)
+				s.indent.Printf("%q", v.S)
 
 			case *ast.Num:
-				indent.Printf("%v", v.N)
+				s.indent.Printf("%v", v.N)
 
 			case *ast.Name:
-				indent.Printf("%v", strId(v.Id))
+				s.indent.Printf("%v", strId(v.Id))
+
+			case *ast.Arg:
+				fmt.Print(v.Arg, v.Annotation)
 
 			case *ast.ImportFrom:
 				for _, i := range v.Names {
 					if i.AsName != "" {
-						indent.Printf("import %v \"%v.%v\"\n", i.AsName, v.Module, i.Name)
+						s.indent.Printf("import %v \"%v.%v\"\n", i.AsName, v.Module, i.Name)
 					} else {
-						indent.Printf("import \"%v/%v\"\n", v.Module, i.Name)
+						s.indent.Printf("import \"%v/%v\"\n", v.Module, i.Name)
 					}
 				}
 
 			case *ast.Import:
 				for _, i := range v.Names {
 					if i.AsName != "" {
-						indent.Printf("import %s %q\n", i.AsName, i.Name)
+						s.indent.Printf("import %s %q\n", i.AsName, i.Name)
 					} else {
-						indent.Printf("import %q\n", i.Name)
+						s.indent.Printf("import %q\n", i.Name)
 					}
 				}
 
 			case *ast.Assign:
-				indent.Printf("%v = %v\n", strExpr(v.Targets), strExpr(v.Value))
+				s.indent.Printf("%v = %v\n", s.strExpr(v.Targets), s.strExpr(v.Value))
+
+			case *ast.AugAssign:
+				s.indent.Printf("%v %v= %v\n", s.strExpr(v.Target), s.strOp(v.Op), s.strExpr(v.Value))
 
 			case *ast.ExprStmt:
-				indent.Println(strExpr(v.Value))
+				s.indent.Println(s.strExpr(v.Value))
 
 			case *ast.Pass:
-				indent.Println("pass")
+				s.indent.Println("// pass")
 
 			case *ast.Return:
 				if v.Value == nil {
-					indent.Println("return")
+					s.indent.Println("return")
 				} else {
-					indent.Println("return", strExpr(v.Value))
+					s.indent.Println("return", s.strExpr(v.Value))
 				}
 
 			case *ast.If:
-				indentif := indent
+				indentif := s.indent
 				if nested {
 					indentif = NoIndent
 				}
 
-				indentif.Printf("if %v {\n", strExpr(v.Test))
-				printBody(indent.Incr(), v.Body, false)
+				indentif.Printf("if %v {\n", s.strExpr(v.Test))
+				s.printBody(v.Body, false)
 				for i, e := range v.Orelse {
 					if _, ok := e.(*ast.If); ok {
-						indent.Printf("} else ")
-						printBody(indent, []ast.Stmt{e}, true)
+						s.indent.Printf("} else ")
+						s.printBody([]ast.Stmt{e}, true)
 						continue
 					}
 
-					indent.Println("} else {")
-					printBody(indent.Incr(), v.Orelse[i:], false)
+					s.indent.Println("} else {")
+					s.printBody(v.Orelse[i:], false)
 					break
 				}
 
 				if !nested {
-					indent.Println("}")
+					s.indent.Println("}")
 				}
 
 			case *ast.For:
 				if c, ok := v.Iter.(*ast.Call); ok { // check for "for x in range(n)"
-					f := strExpr(c.Func)
+					f := s.strExpr(c.Func)
 
 					if f == "range" {
 						if len(c.Args) < 1 || len(c.Args) > 3 {
@@ -556,68 +597,68 @@ func printBody(indent Indent, body []ast.Stmt, nested bool) {
 						var stop string
 
 						if len(c.Args) == 1 {
-							stop = strExpr(c.Args[0])
+							stop = s.strExpr(c.Args[0])
 						} else {
-							start = strExpr(c.Args[0])
-							stop = strExpr(c.Args[1])
+							start = s.strExpr(c.Args[0])
+							stop = s.strExpr(c.Args[1])
 
 							if len(c.Args) > 2 {
-								step = strExpr(c.Args[2])
+								step = s.strExpr(c.Args[2])
 							}
 						}
 
-						t := strExpr(v.Target)
-						indent.Printf("for %v := %v; %v < %v; %v += %v {\n",
+						t := s.strExpr(v.Target)
+						s.indent.Printf("for %v := %v; %v < %v; %v += %v {\n",
 							t, start, t, stop, t, step)
 					} else {
-						indent.Printf("for %v := range %v {\n",
-							strExpr(v.Target), strExpr(v.Iter))
+						s.indent.Printf("for %v := range %v {\n",
+							s.strExpr(v.Target), s.strExpr(v.Iter))
 					}
 				} else { // for x in iterable
-					indent.Printf("for %v := range %v {\n", strExpr(v.Target), strExpr(v.Iter))
+					s.indent.Printf("for %v := range %v {\n", s.strExpr(v.Target), s.strExpr(v.Iter))
 				}
 
-				printBody(indent.Incr(), v.Body, false)
+				s.printBody(v.Body, false)
 				if len(v.Orelse) > 0 {
-					indent.Println("} else {")
-					printBody(indent.Incr(), v.Orelse, false)
+					s.indent.Println("} else {")
+					s.printBody(v.Orelse, false)
 				}
-				indent.Println("}")
+				s.indent.Println("}")
 
 			case *ast.While:
-				indent.Printf("for %v {\n", strExpr(v.Test))
-				printBody(indent.Incr(), v.Body, false)
+				s.indent.Printf("for %v {\n", s.strExpr(v.Test))
+				s.printBody(v.Body, false)
 				if len(v.Orelse) > 0 {
-					indent.Println("} else {")
-					printBody(indent.Incr(), v.Orelse, false)
+					s.indent.Println("} else {")
+					s.printBody(v.Orelse, false)
 				}
-				indent.Println("}")
+				s.indent.Println("}")
 
 			case *ast.FunctionDef:
-				indent.Printf("func %v(%v) {\n", v.Name, strFunctionArguments(v.Args))
-				printBody(indent.Incr(), v.Body, false)
-				indent.Println("}")
+				s.indent.Printf("func %v(%v) {\n", v.Name, s.strFunctionArguments(v.Args))
+				s.printBody(v.Body, false)
+				s.indent.Println("}")
 
 			case *ast.ClassDef:
 				for _, d := range v.DecoratorList {
-					indent.Printf("// @%v\n", strExpr(d))
+					s.indent.Printf("// @%v\n", s.strExpr(d))
 				}
 
-				indent.Printf("type %v struct {", v.Name)
+				s.indent.Printf("type %v struct {", v.Name)
 
 				if len(v.Bases) > 0 || len(v.Keywords) > 0 {
 					fmt.Printf(" //")
 
 					if len(v.Bases) > 0 {
-						fmt.Printf(" %v", strExpr(v.Bases))
+						fmt.Printf(" %v", s.strExpr(v.Bases))
 					}
 
 					if len(v.Keywords) > 0 {
-						fmt.Printf(" %v", strExpr(v.Keywords))
+						fmt.Printf(" %v", s.strExpr(v.Keywords))
 					}
 				}
 				fmt.Println()
-				indent.Println("}")
+				s.indent.Println("}")
 
 				if len(v.Body) == 1 {
 					if _, ok := v.Body[0].(*ast.Pass); ok {
@@ -626,13 +667,57 @@ func printBody(indent Indent, body []ast.Stmt, nested bool) {
 				}
 
 				fmt.Println()
-				printBody(indent, v.Body, false)
+				s.printBody(v.Body, false)
 
-			case *ast.Arg:
-				fmt.Print(v.Arg, v.Annotation)
+			case *ast.Try:
+				s.indent.Println("if err := func() PyException { // try")
+				s.printBody(v.Body, false)
+				s.indent.Println("}); err != nil {")
+
+				if len(v.Handlers) > 0 {
+					s.Incr()
+					s.indent.Println("switch err { // except")
+
+					for _, h := range v.Handlers {
+						s.indent.Printf("case %v:", s.strExpr(h.ExprType))
+						if h.Name != "" {
+							fmt.Printf(" // as %v", h.Name)
+						}
+						fmt.Println()
+						s.printBody(h.Body, false)
+					}
+
+					s.indent.Println("}")
+					s.Decr()
+				}
+
+				if len(v.Orelse) > 0 {
+					s.indent.Println("} else {")
+					s.printBody(v.Orelse, false)
+				}
+
+				if len(v.Finalbody) > 0 {
+					s.indent.Println("} { // finally")
+					s.printBody(v.Finalbody, false)
+				}
+				s.indent.Println("}")
+
+			case *ast.Raise:
+				s.indent.Printf("return RaisedException(%v) // raise", s.strExpr(v.Exc))
+				if v.Cause != nil {
+					fmt.Printf(" cause: %v", s.strExpr(v.Cause))
+				}
+				fmt.Println()
+
+			case *ast.Assert:
+				if v.Msg != nil {
+					s.indent.Printf("Assert(%v, %v)\n", s.strExpr(v.Test), s.strExpr(v.Msg))
+				} else {
+					s.indent.Printf("Assert(%v, %q)\n", s.strExpr(v.Test), s.strExpr(v.Test))
+				}
 
 			default:
-				indent.Println(unknown("STMT", node))
+				s.indent.Println(unknown("STMT", node))
 				return true
 			}
 
@@ -641,12 +726,12 @@ func printBody(indent Indent, body []ast.Stmt, nested bool) {
 	}
 }
 
-func printPrologue() {
-	fmt.Println(`
-package converted // converted by ppy
+func (s *Scope) printPrologue() {
+	fmt.Println(`// converted by gopyr
+package converted
 
-type dict = map[string]interface{}
-type list = []interface{}
+import _ "github.com/raff/gopyr/runtime"
+
 `)
 }
 
@@ -662,6 +747,9 @@ func main() {
 		log.Printf("Need files to parse")
 		os.Exit(1)
 	}
+
+	var scope Scope
+
 	for _, path := range flag.Args() {
 		in, err := os.Open(path)
 		if err != nil {
@@ -684,7 +772,7 @@ func main() {
 		}
 
 		// where do I get the module name ?
-		printPrologue()
-		printBody("", m.Body, false)
+		scope.printPrologue()
+		scope.printBody(m.Body, false)
 	}
 }
