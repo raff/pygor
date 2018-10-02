@@ -37,6 +37,18 @@ func unknown(typ string, v interface{}) string {
 	return msg
 }
 
+func strBoolOp(op ast.BoolOpNumber) string {
+	switch op {
+	case ast.And:
+		return "&&"
+
+	case ast.Or:
+		return "||"
+	}
+
+	return unknown("BOOLOP", op.String())
+}
+
 func strUnary(op ast.UnaryOpNumber) string {
 	switch op {
 	case ast.Not:
@@ -207,6 +219,13 @@ func strExpr(expr interface{}) string {
 		} else {
 			return fmt.Sprintf("%v%v", strUnary(v.Op), strExpr(v.Operand))
 		}
+
+	case *ast.BoolOp:
+		var bexprs []string
+		for _, e := range v.Values {
+			bexprs = append(bexprs, strExpr(e))
+		}
+		return strings.Join(bexprs, " "+strBoolOp(v.Op)+" ")
 
 	case *ast.BinOp:
 		return fmt.Sprintf("%v %v %v", strExpr(v.Left), strOp(v.Op), strExpr(v.Right))
