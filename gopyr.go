@@ -210,6 +210,22 @@ func (s *Scope) strSlice(name ast.Expr, value ast.Slicer) string {
 	return ret + "]"
 }
 
+func (s *Scope) strIdentifiers(l []ast.Identifier) string {
+	var ls []string
+	for _, i := range l {
+		ls = append(ls, string(i))
+	}
+	return strings.Join(ls, ", ")
+}
+
+func (s *Scope) strExprList(l []ast.Expr) string {
+	var exprs []string
+	for _, e := range l {
+		exprs = append(exprs, s.strExpr(e))
+	}
+	return strings.Join(exprs, ", ")
+}
+
 func (s *Scope) strExpr(expr interface{}) string {
 	if verbose {
 		fmt.Printf("XXX %T %#v\n\n", expr, expr)
@@ -217,11 +233,7 @@ func (s *Scope) strExpr(expr interface{}) string {
 
 	switch v := expr.(type) {
 	case []ast.Expr:
-		var exprs []string
-		for _, e := range v {
-			exprs = append(exprs, s.strExpr(e))
-		}
-		return strings.Join(exprs, ", ")
+		return s.strExprList(v)
 
 	case []*ast.Keyword:
 		var kwords []string
@@ -231,18 +243,10 @@ func (s *Scope) strExpr(expr interface{}) string {
 		return strings.Join(kwords, ", ")
 
 	case *ast.Tuple:
-		var exprs []string
-		for _, e := range v.Elts {
-			exprs = append(exprs, s.strExpr(e))
-		}
-		return "list{" + strings.Join(exprs, ", ") + "}"
+		return "tuple{" + s.strExprList(v.Elts) + "}"
 
 	case *ast.List:
-		var exprs []string
-		for _, e := range v.Elts {
-			exprs = append(exprs, s.strExpr(e))
-		}
-		return "array{" + strings.Join(exprs, ", ") + "}"
+		return "array{" + s.strExprList(v.Elts) + "}"
 
 	case *ast.Num:
 		s, _ := py.Str(v.N)
@@ -305,6 +309,17 @@ func (s *Scope) strExpr(expr interface{}) string {
 	case *ast.IfExp:
 		return fmt.Sprintf("func() { if %v { return %v } else { return %v }}()",
 			s.strExpr(v.Test), s.strExpr(v.Body), s.strExpr(v.Orelse))
+
+	case *ast.ListComp:
+		return fmt.Sprintf("[%v for %v]", s.strExpr(v.Elt), s.strExpr(v.Generators))
+
+	case []ast.Comprehension:
+		var cc []string
+		for _, c := range v {
+			cc = append(cc,
+				fmt.Sprintf("{target:%v iter:%v ifs:%v}", s.strExpr(c.Target), s.strExpr(c.Iter), s.strExpr(c.Ifs)))
+		}
+		return strings.Join(cc, " + ")
 	}
 
 	return unknown("EXPR", expr)
@@ -715,6 +730,9 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 				} else {
 					s.indent.Printf("Assert(%v, %q)\n", s.strExpr(v.Test), s.strExpr(v.Test))
 				}
+
+			case *ast.Global:
+				s.indent.Println("// global", s.strIdentifiers(v.Names))
 
 			default:
 				s.indent.Println(unknown("STMT", node))
