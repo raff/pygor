@@ -346,6 +346,9 @@ func (s *Scope) strExpr(expr interface{}) string {
 
 	case ast.Comprehension:
 		target := s.strExpr(v.Target)
+		if tuple, ok := v.Target.(*ast.Tuple); ok {
+			target = s.strExpr(tuple.Elts)
+		}
 		if !strings.Contains(target, ", ") { // k,v
 			target = "_, " + target
 		}
@@ -366,8 +369,8 @@ func (s *Scope) strExpr(expr interface{}) string {
 			inner = strings.Replace(inner, "@elt@", gen, 1)
 		}
 
-		lret := fmt.Sprintf("lc = append(lc, %v)", s.strExpr(v.Elt))
-		return "func() (lc List) { " + strings.Replace(inner, "@elt@", lret, 1) + "; return }()"
+		gen := fmt.Sprintf("lc = append(lc, %v)", s.strExpr(v.Elt))
+		return "func() (lc List) { " + strings.Replace(inner, "@elt@", gen, 1) + "; return }()"
 
 	case *ast.DictComp:
 		inner := "@elt@"
@@ -377,8 +380,21 @@ func (s *Scope) strExpr(expr interface{}) string {
 			inner = strings.Replace(inner, "@elt@", gen, 1)
 		}
 
-		lret := fmt.Sprintf("mm[%v] = %v", s.strExpr(v.Key), s.strExpr(v.Value))
-		return "func() (mm Dict) { mm = Dict{}; " + strings.Replace(inner, "@elt@", lret, 1) + "; return }()"
+		gen := fmt.Sprintf("mm[%v] = %v", s.strExpr(v.Key), s.strExpr(v.Value))
+		return "func() (mm Dict) { mm = Dict{}; " + strings.Replace(inner, "@elt@", gen, 1) + "; return }()"
+
+	case *ast.GeneratorExp:
+		inner := "@elt@"
+
+		for _, g := range v.Generators {
+			gen := s.strExpr(g)
+			inner = strings.Replace(inner, "@elt@", gen, 1)
+		}
+
+		gen := fmt.Sprintf("c <- %v", s.strExpr(v.Elt))
+		return "func() (c chan Any) { c = make(chan Any); go func() { " +
+			strings.Replace(inner, "@elt@", gen, 1) +
+			"; close(c) }(); return }()"
 	}
 
 	return unknown("EXPR", expr)
@@ -694,8 +710,11 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 						s.indent.Printf("for %v := %v; %v < %v; %v += %v {\n",
 							t, start, t, stop, t, step)
 					} else {
-						s.indent.Printf("for %v := range %v {\n",
-							s.strExpr(v.Target), s.strExpr(v.Iter))
+						t := s.strExpr(v.Target)
+						if tuple, ok := v.Target.(*ast.Tuple); ok {
+							t = s.strExpr(tuple.Elts)
+						}
+						s.indent.Printf("for %v := range %v {\n", t, s.strExpr(v.Iter))
 					}
 				} else { // for x in iterable
 					s.indent.Printf("for %v := range %v {\n", s.strExpr(v.Target), s.strExpr(v.Iter))
@@ -827,6 +846,7 @@ func (s *Scope) printPrologue() {
 	fmt.Println(`// converted by gopyr
 package converted
 
+import "fmt"
 import . "github.com/raff/gopyr/runtime"
 
 `)
