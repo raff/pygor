@@ -23,13 +23,19 @@ var (
 	verbose      bool
 
 	gokeywords = map[string]string{
-		"func": "func_",
+		"func": "funcΠ",
+
+		// Convert python names to gopyr names
+		"str":   "string",
+		"dict":  "Dict",
+		"list":  "List",
+		"tuple": "Tuple",
 
 		// these are not go keywords but they are used by gopyr
-		"any":   "any_",
-		"dict":  "dict_",
-		"list":  "list_",
-		"tuple": "tuple_",
+		"Any":   "AnyΠ",
+		"Dict":  "DictΠ",
+		"List":  "ListΠ",
+		"Tuple": "TupleΠ",
 	}
 )
 
@@ -261,17 +267,17 @@ func (s *Scope) strExpr(expr interface{}) string {
 		return strings.Join(kwords, ", ")
 
 	case *ast.Tuple:
-		return "tuple{" + s.strExprList(v.Elts, ", ") + "}"
+		return "Tuple{" + s.strExprList(v.Elts, ", ") + "}"
 
 	case *ast.List:
-		return "array{" + s.strExprList(v.Elts, ", ") + "}"
+		return "List{" + s.strExprList(v.Elts, ", ") + "}"
 
 	case *ast.Dict:
 		var kvals []string
 		for i, k := range v.Keys {
 			kvals = append(kvals, fmt.Sprintf("%v: %v", s.strExpr(k), s.strExpr(v.Values[i])))
 		}
-		return "dict{" + strings.Join(kvals, ", ") + "}"
+		return "Dict{" + strings.Join(kvals, ", ") + "}"
 
 	case *ast.Num:
 		s, _ := py.Str(v.N)
@@ -361,7 +367,18 @@ func (s *Scope) strExpr(expr interface{}) string {
 		}
 
 		lret := fmt.Sprintf("lc = append(lc, %v)", s.strExpr(v.Elt))
-		return "func() { " + strings.Replace(inner, "@elt@", lret, 1) + "; return }()"
+		return "func() (lc List) { " + strings.Replace(inner, "@elt@", lret, 1) + "; return }()"
+
+	case *ast.DictComp:
+		inner := "@elt@"
+
+		for _, g := range v.Generators {
+			gen := s.strExpr(g)
+			inner = strings.Replace(inner, "@elt@", gen, 1)
+		}
+
+		lret := fmt.Sprintf("mm[%v] = %v", s.strExpr(v.Key), s.strExpr(v.Value))
+		return "func() (mm Dict) { mm = Dict{}; " + strings.Replace(inner, "@elt@", lret, 1) + "; return }()"
 	}
 
 	return unknown("EXPR", expr)
@@ -413,7 +430,7 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		buf.WriteString(strId(arg.Arg))
-		buf.WriteString(" any") // can't guess argument types
+		buf.WriteString(" Any") // can't guess argument types
 	}
 
 	for i, arg := range args.Kwonlyargs {
@@ -427,7 +444,7 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		buf.WriteString(strId(arg.Arg))
-		buf.WriteString(" any = ") // here I could guess based on the default values
+		buf.WriteString(" Any = ") // here I could guess based on the default values
 		buf.WriteString("=")
 		buf.WriteString(s.strExpr(args.KwDefaults[i]))
 	}
@@ -438,7 +455,7 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		buf.WriteString(strId(args.Vararg.Arg)) // annotation ?
-		buf.WriteString(" ...any")
+		buf.WriteString(" ...Any")
 	}
 
 	if args.Kwarg != nil {
@@ -447,7 +464,7 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		buf.WriteString(strId(args.Kwarg.Arg)) // annotation ?
-		buf.WriteString(" ...any")
+		buf.WriteString(" ...Any")
 	}
 
 	// XXX: what is arg.Defaults ?
@@ -492,6 +509,13 @@ func (s *Scope) strCall(call *ast.Call) string {
 
 	case strings.HasSuffix(cfunc, ".endswith"):
 		cfunc = fmt.Sprintf("strings.HasSuffix(%v, ", cfunc)
+
+	case cfunc == "isinstance": // isinstance(obj, type)
+		if len(call.Args) == 2 {
+			obj := s.strExpr(call.Args[0])
+			otype := s.strExpr(call.Args[1])
+			return fmt.Sprintf("func() bool { _, ok := %v.(%v); return ok }()", obj, otype)
+		}
 	}
 
 	buf.WriteString(cfunc)
@@ -803,7 +827,7 @@ func (s *Scope) printPrologue() {
 	fmt.Println(`// converted by gopyr
 package converted
 
-import _ "github.com/raff/gopyr/runtime"
+import . "github.com/raff/gopyr/runtime"
 
 `)
 }

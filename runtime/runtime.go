@@ -2,10 +2,10 @@ package runtime
 
 import "fmt"
 
-type any = interface{}
-type dict = map[string]any
-type list = []any
-type tuple = []any
+type Any = interface{}
+type Dict = map[string]Any
+type List = []Any
+type Tuple = []Any
 
 func Assert(cond bool, message string) {
 	if !cond {
