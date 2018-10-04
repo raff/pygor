@@ -21,7 +21,25 @@ var (
 	debugLevel   int
 	panicUnknown bool
 	verbose      bool
+
+	gokeywords = map[string]string{
+		"func": "func_",
+
+		// these are not go keywords but they are used by gopyr
+		"any":   "any_",
+		"dict":  "dict_",
+		"list":  "list_",
+		"tuple": "tuple_",
+	}
 )
+
+func rename(s string) string {
+	if n, ok := gokeywords[s]; ok {
+		return n
+	}
+
+	return s
+}
 
 func unknown(typ string, v interface{}) string {
 	msg := fmt.Sprintf("UNKNOWN-%v: %T %#v", typ, v, v)
@@ -213,17 +231,17 @@ func (s *Scope) strSlice(name ast.Expr, value ast.Slicer) string {
 func (s *Scope) strIdentifiers(l []ast.Identifier) string {
 	var ls []string
 	for _, i := range l {
-		ls = append(ls, string(i))
+		ls = append(ls, strId(i))
 	}
 	return strings.Join(ls, ", ")
 }
 
-func (s *Scope) strExprList(l []ast.Expr) string {
+func (s *Scope) strExprList(l []ast.Expr, sep string) string {
 	var exprs []string
 	for _, e := range l {
 		exprs = append(exprs, s.strExpr(e))
 	}
-	return strings.Join(exprs, ", ")
+	return strings.Join(exprs, sep)
 }
 
 func (s *Scope) strExpr(expr interface{}) string {
@@ -233,7 +251,7 @@ func (s *Scope) strExpr(expr interface{}) string {
 
 	switch v := expr.(type) {
 	case []ast.Expr:
-		return s.strExprList(v)
+		return s.strExprList(v, ", ")
 
 	case []*ast.Keyword:
 		var kwords []string
@@ -243,10 +261,10 @@ func (s *Scope) strExpr(expr interface{}) string {
 		return strings.Join(kwords, ", ")
 
 	case *ast.Tuple:
-		return "tuple{" + s.strExprList(v.Elts) + "}"
+		return "tuple{" + s.strExprList(v.Elts, ", ") + "}"
 
 	case *ast.List:
-		return "array{" + s.strExprList(v.Elts) + "}"
+		return "array{" + s.strExprList(v.Elts, ", ") + "}"
 
 	case *ast.Dict:
 		var kvals []string
@@ -254,9 +272,13 @@ func (s *Scope) strExpr(expr interface{}) string {
 			kvals = append(kvals, fmt.Sprintf("%v: %v", s.strExpr(k), s.strExpr(v.Values[i])))
 		}
 		return "dict{" + strings.Join(kvals, ", ") + "}"
+
 	case *ast.Num:
 		s, _ := py.Str(v.N)
 		return string(s.(py.String))
+
+	case ast.Identifier:
+		return strId(v)
 
 	case *ast.NameConstant:
 		switch v.Value {
@@ -298,7 +320,7 @@ func (s *Scope) strExpr(expr interface{}) string {
 		return s.strExpr(v.Left) + s.compOps(v.Ops, v.Comparators)
 
 	case *ast.Name:
-		return string(v.Id)
+		return strId(v.Id)
 
 	case *ast.Attribute:
 		return convertName(s.strExpr(v.Value) + "." + string(v.Attr))
@@ -316,16 +338,30 @@ func (s *Scope) strExpr(expr interface{}) string {
 		return fmt.Sprintf("func() { if %v { return %v } else { return %v }}()",
 			s.strExpr(v.Test), s.strExpr(v.Body), s.strExpr(v.Orelse))
 
-	case *ast.ListComp:
-		return fmt.Sprintf("[%v for %v]", s.strExpr(v.Elt), s.strExpr(v.Generators))
-
-	case []ast.Comprehension:
-		var cc []string
-		for _, c := range v {
-			cc = append(cc,
-				fmt.Sprintf("{target:%v iter:%v ifs:%v}", s.strExpr(c.Target), s.strExpr(c.Iter), s.strExpr(c.Ifs)))
+	case ast.Comprehension:
+		target := s.strExpr(v.Target)
+		if !strings.Contains(target, ", ") { // k,v
+			target = "_, " + target
 		}
-		return strings.Join(cc, " + ")
+		ret := fmt.Sprintf("for %v := range %v { ", target, s.strExpr(v.Iter))
+		close := "}"
+		if len(v.Ifs) > 0 {
+			ret += fmt.Sprintf("if %v { ", s.strExprList(v.Ifs, " && "))
+			close += "}"
+		}
+
+		return ret + "@elt@ " + close
+
+	case *ast.ListComp:
+		inner := "@elt@"
+
+		for _, g := range v.Generators {
+			gen := s.strExpr(g)
+			inner = strings.Replace(inner, "@elt@", gen, 1)
+		}
+
+		lret := fmt.Sprintf("lc = append(lc, %v)", s.strExpr(v.Elt))
+		return "func() { " + strings.Replace(inner, "@elt@", lret, 1) + "; return }()"
 	}
 
 	return unknown("EXPR", expr)
@@ -352,7 +388,7 @@ func convertName(s string) string {
 		s = "os.Stderr." + s[11:]
 	}
 
-	return s
+	return rename(s)
 }
 
 func strId(id ast.Identifier) string {
@@ -377,6 +413,7 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		buf.WriteString(strId(arg.Arg))
+		buf.WriteString(" any") // can't guess argument types
 	}
 
 	for i, arg := range args.Kwonlyargs {
@@ -390,6 +427,7 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 		}
 
 		buf.WriteString(strId(arg.Arg))
+		buf.WriteString(" any = ") // here I could guess based on the default values
 		buf.WriteString("=")
 		buf.WriteString(s.strExpr(args.KwDefaults[i]))
 	}
@@ -399,8 +437,8 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 			buf.WriteString(", ")
 		}
 
-		buf.WriteString("...")
 		buf.WriteString(strId(args.Vararg.Arg)) // annotation ?
+		buf.WriteString(" ...any")
 	}
 
 	if args.Kwarg != nil {
@@ -408,8 +446,8 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
 			buf.WriteString(", ")
 		}
 
-		buf.WriteString("...")
 		buf.WriteString(strId(args.Kwarg.Arg)) // annotation ?
+		buf.WriteString(" ...any")
 	}
 
 	// XXX: what is arg.Defaults ?
@@ -656,7 +694,7 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 				s.indent.Println("}")
 
 			case *ast.FunctionDef:
-				s.indent.Printf("func %v(%v) {\n", v.Name, s.strFunctionArguments(v.Args))
+				s.indent.Printf("func %v(%v) {\n", s.strExpr(v.Name), s.strFunctionArguments(v.Args))
 				s.printBody(v.Body, false)
 				s.indent.Println("}")
 
@@ -693,7 +731,7 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 			case *ast.Try:
 				s.indent.Println("if err := func() PyException { // try")
 				s.printBody(v.Body, false)
-				s.indent.Println("}); err != nil {")
+				s.indent.Println("}(); err != nil {")
 
 				if len(v.Handlers) > 0 {
 					s.Incr()
@@ -718,7 +756,7 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 				}
 
 				if len(v.Finalbody) > 0 {
-					s.indent.Println("} { // finally")
+					s.indent.Println("}; { // finally")
 					s.printBody(v.Finalbody, false)
 				}
 				s.indent.Println("}")
