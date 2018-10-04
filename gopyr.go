@@ -666,6 +666,9 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 
 				indentif.Printf("if %v {\n", s.strExpr(v.Test))
 				s.printBody(v.Body, false)
+
+				shouldclose := len(v.Orelse) == 0
+
 				for i, e := range v.Orelse {
 					if _, ok := e.(*ast.If); ok {
 						s.indent.Printf("} else ")
@@ -675,10 +678,11 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 
 					s.indent.Println("} else {")
 					s.printBody(v.Orelse[i:], false)
+					shouldclose = true
 					break
 				}
 
-				if !nested {
+				if shouldclose {
 					s.indent.Println("}")
 				}
 
@@ -900,6 +904,6 @@ func main() {
 
 		// where do I get the module name ?
 		scope.printPrologue()
-		scope.printBody(m.Body, false)
+		scope.printBody(m.Body, true)
 	}
 }
