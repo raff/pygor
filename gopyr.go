@@ -859,7 +859,6 @@ package converted
 
 import "fmt"
 import . "github.com/raff/gopyr/runtime"
-
 `)
 }
 
