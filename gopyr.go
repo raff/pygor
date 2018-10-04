@@ -99,12 +99,8 @@ const (
 )
 
 type Scope struct {
-	Name   string
-	Type   ScopeType
-	indent Indent
-
-	next *Scope
-	prev *Scope
+	indent    Indent // current indentation level
+	classname string // name of the current class, used for class/object methods
 }
 
 func (s *Scope) Incr() {
@@ -338,7 +334,7 @@ func (s *Scope) strExpr(expr interface{}) string {
 		return s.strCall(v)
 
 	case *ast.Lambda:
-		return fmt.Sprintf("func(%v) {  return %s; }", s.strFunctionArguments(v.Args), s.strExpr(v.Body))
+		return fmt.Sprintf("func(%v) {  return %s; }", s.strFunctionArguments(v.Args, false), s.strExpr(v.Body))
 
 	case *ast.IfExp:
 		return fmt.Sprintf("func() { if %v { return %v } else { return %v }}()",
@@ -428,14 +424,19 @@ func strId(id ast.Identifier) string {
 	return convertName(string(id))
 }
 
-func (s *Scope) strFunctionArguments(args *ast.Arguments) string {
+func (s *Scope) strFunctionArguments(args *ast.Arguments, skipReceiver bool) string {
 	if args == nil {
 		return ""
 	}
 
 	var buf strings.Builder
 
-	for _, arg := range args.Args {
+	aargs := args.Args
+	if skipReceiver && len(aargs) > 0 {
+		aargs = aargs[1:]
+	}
+
+	for _, arg := range aargs {
 		if buf.Len() > 0 {
 			buf.WriteString(", ")
 		}
@@ -737,16 +738,23 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 				s.indent.Println("}")
 
 			case *ast.FunctionDef:
-				s.indent.Printf("func %v(%v) {\n", s.strExpr(v.Name), s.strFunctionArguments(v.Args))
+				receiver := ""
+				if s.classname != "" {
+					receiver = fmt.Sprintf("(self *%v) ", s.classname)
+				}
+				s.indent.Printf("func %v%v(%v) {\n",
+					receiver, s.strExpr(v.Name), s.strFunctionArguments(v.Args, receiver != ""))
 				s.printBody(v.Body, false)
 				s.indent.Println("}")
 
 			case *ast.ClassDef:
+				classname := strId(v.Name)
+
 				for _, d := range v.DecoratorList {
 					s.indent.Printf("// @%v\n", s.strExpr(d))
 				}
 
-				s.indent.Printf("type %v struct {", v.Name)
+				s.indent.Printf("type %v struct {", classname)
 
 				if len(v.Bases) > 0 || len(v.Keywords) > 0 {
 					fmt.Printf(" //")
@@ -769,7 +777,10 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 				}
 
 				fmt.Println()
-				s.printBody(v.Body, false)
+
+				cs := s
+				cs.classname = classname
+				cs.printBody(v.Body, true)
 
 			case *ast.Try:
 				s.indent.Println("if err := func() PyException { // try")
