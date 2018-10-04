@@ -248,6 +248,12 @@ func (s *Scope) strExpr(expr interface{}) string {
 	case *ast.List:
 		return "array{" + s.strExprList(v.Elts) + "}"
 
+	case *ast.Dict:
+		var kvals []string
+		for i, k := range v.Keys {
+			kvals = append(kvals, fmt.Sprintf("%v: %v", s.strExpr(k), s.strExpr(v.Values[i])))
+		}
+		return "dict{" + strings.Join(kvals, ", ") + "}"
 	case *ast.Num:
 		s, _ := py.Str(v.N)
 		return string(s.(py.String))
@@ -733,6 +739,17 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 
 			case *ast.Global:
 				s.indent.Println("// global", s.strIdentifiers(v.Names))
+
+			case *ast.Delete:
+				for _, t := range v.Targets {
+					st := t.(*ast.Subscript)
+					if i, ok := st.Slice.(*ast.Index); ok {
+						s.indent.Printf("delete(%v, %v)\n", s.strExpr(st.Value), s.strExpr(i.Value))
+						continue
+					}
+
+					s.indent.Printf("delete %v // %#v\n", s.strExpr(st), st)
+				}
 
 			default:
 				s.indent.Println(unknown("STMT", node))
