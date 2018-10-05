@@ -593,10 +593,11 @@ func (s *Scope) strCall(call *ast.Call) string {
 		buf.WriteString(s.strExpr(call.Kwargs))
 	}
 
-	if strings.Contains(buf.String(), "rintln(fmt.Sprintf(") {
-		// simplify Println(Sprintf)
-		return strings.Replace(buf.String(), "rintln(fmt.Sprintf(", "rintf(", 1)
-	}
+	// this is not adding a newline, so we skip it for now
+	// if strings.Contains(buf.String(), "rintln(fmt.Sprintf(") {
+	// 	// simplify Println(Sprintf)
+	// 	return strings.Replace(buf.String(), "rintln(fmt.Sprintf(", "rintf(", 1)
+	// }
 
 	buf.WriteString(")")
 	return buf.String()
