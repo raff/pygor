@@ -24,6 +24,7 @@ var (
 
 		// Convert python names to gopyr names
 		"str":   "string",
+		"float": "float64",
 		"dict":  "Dict",
 		"list":  "List",
 		"tuple": "Tuple",
