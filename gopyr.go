@@ -1,7 +1,3 @@
-// Copyright 2018 The go-python Authors.  All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package main
 
 import (
@@ -247,6 +243,22 @@ func (s *Scope) strExprList(l []ast.Expr, sep string) string {
 	return strings.Join(exprs, sep)
 }
 
+func (s *Scope) strExprOrList(expr ast.Expr) string {
+	if tuple, ok := expr.(*ast.Tuple); ok {
+		return s.strExpr(tuple.Elts)
+	}
+
+	return s.strExpr(expr)
+}
+
+func isNone(expr ast.Expr) bool {
+	if c, ok := expr.(*ast.NameConstant); ok {
+		return c.Value == py.None
+	}
+
+	return false
+}
+
 func (s *Scope) strExpr(expr interface{}) string {
 	if verbose {
 		fmt.Printf("XXX %T %#v\n\n", expr, expr)
@@ -319,10 +331,7 @@ func (s *Scope) strExpr(expr interface{}) string {
 	case *ast.BinOp:
 		if v.Op == ast.Modulo { // %
 			if _, ok := v.Left.(*ast.Str); ok { // this is really a formatting operation
-				params := s.strExpr(v.Right)
-				if tuple, ok := v.Right.(*ast.Tuple); ok {
-					params = s.strExpr(tuple.Elts)
-				}
+				params := s.strExprOrList(v.Right)
 				return fmt.Sprintf("fmt.Sprintf(%v, %v)", s.strExpr(v.Left), params)
 			}
 		}
@@ -352,10 +361,7 @@ func (s *Scope) strExpr(expr interface{}) string {
 			s.strExpr(v.Test), s.strExpr(v.Body), s.strExpr(v.Orelse))
 
 	case ast.Comprehension:
-		target := s.strExpr(v.Target)
-		if tuple, ok := v.Target.(*ast.Tuple); ok {
-			target = s.strExpr(tuple.Elts)
-		}
+		target := s.strExprOrList(v.Target)
 		if !strings.Contains(target, ", ") { // k,v
 			target = "_, " + target
 		}
@@ -452,13 +458,13 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments, skipReceiver bool) str
 			buf.WriteString(", ")
 		}
 
+		buf.WriteString(strId(arg.Arg))
+		buf.WriteString(" ")
 		if arg.Annotation != nil {
 			buf.WriteString(s.strExpr(arg.Annotation))
-			buf.WriteString(" ")
+		} else {
+			buf.WriteString(" Any") // can't guess argument types
 		}
-
-		buf.WriteString(strId(arg.Arg))
-		buf.WriteString(" Any") // can't guess argument types
 	}
 
 	for i, arg := range args.Kwonlyargs {
@@ -648,8 +654,19 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 			if s.classname != "" {
 				receiver = fmt.Sprintf("(self *%v) ", s.classname)
 			}
-			s.indent.Printf("func %v%v(%v) {\n",
-				receiver, s.strExpr(v.Name), s.strFunctionArguments(v.Args, receiver != ""))
+
+			returns := ""
+			if v.Returns != nil && !isNone(v.Returns) {
+				returns = s.strExpr(v.Returns) + " "
+				if tuple, ok := v.Returns.(*ast.Tuple); ok {
+					returns = "(" + s.strExpr(tuple.Elts) + ") "
+				}
+			}
+			s.indent.Printf("func %v%v(%v) %v{\n",
+				receiver,
+				s.strExpr(v.Name),
+				s.strFunctionArguments(v.Args, receiver != ""),
+				returns)
 			s.printBody(v.Body, false)
 			s.indent.Println("}")
 
@@ -704,7 +721,7 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 			if v.Value == nil {
 				s.indent.Println("return")
 			} else {
-				s.indent.Println("return", s.strExpr(v.Value))
+				s.indent.Println("return", s.strExprOrList(v.Value))
 			}
 
 		case *ast.If:
