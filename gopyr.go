@@ -359,9 +359,14 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 
 	case *ast.Compare:
 		stmt := s.goExpr(v.Left)
+		var prev *jen.Statement
 		for i, op := range v.Ops {
+			if prev != nil {
+				stmt.Op("&&").Add(prev)
+			}
 			stmt.Add(s.goCmpOp(op))
-			stmt.Add(s.goExpr(v.Comparators[i]))
+			prev = s.goExpr(v.Comparators[i])
+			stmt.Add(prev)
 		}
 		return stmt
 
