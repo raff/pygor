@@ -372,8 +372,10 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 
 			right = s.goExpr(v.Comparators[i])
 
-			if op == ast.In || op == ast.NotIn {
+			if op == ast.In {
 				stmt.Add(goContains.Clone().Call(right, left))
+			} else if op == ast.NotIn {
+				stmt.Op("!").Add(goContains.Clone().Call(right, left))
 			} else {
 				stmt.Add(left)
 				stmt.Add(s.goCmpOp(op))
