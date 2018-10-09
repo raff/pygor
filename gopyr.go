@@ -3,14 +3,16 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/go-python/gpython/ast"
 	"github.com/go-python/gpython/parser"
 	"github.com/go-python/gpython/py"
+
+	"github.com/raff/jennifer/jen"
 )
 
 var (
@@ -35,6 +37,11 @@ var (
 		"List":  "ListΠ",
 		"Tuple": "TupleΠ",
 	}
+
+	goList  = jen.Qual("github.com/raff/gopyr/runtime", "List")
+	goTuple = jen.Qual("github.com/raff/gopyr/runtime", "Tuple")
+	goDict  = jen.Qual("github.com/raff/gopyr/runtime", "Dict")
+        goException = jen.Qual("github.com/raff/gopyr/runtime", "PyException")
 )
 
 func rename(s string) string {
@@ -45,7 +52,7 @@ func rename(s string) string {
 	return s
 }
 
-func unknown(typ string, v interface{}) string {
+func unknown(typ string, v interface{}) *jen.Statement {
 	msg := fmt.Sprintf("UNKNOWN-%v: %T %#v", typ, v, v)
 
 	if expr, ok := v.(ast.Expr); ok {
@@ -56,200 +63,173 @@ func unknown(typ string, v interface{}) string {
 		panic(msg)
 	}
 
-	return msg
+	return jen.Lit(msg)
 }
-
-// Indent implements print functions with indentation
-type Indent string
-
-func (indent Indent) Incr() Indent {
-	return indent + Indent("  ")
-}
-
-func (indent Indent) Decr() Indent {
-	return Indent(indent[2:])
-}
-
-func (indent Indent) Print(args ...interface{}) {
-	fmt.Print(indent)
-	fmt.Print(args...)
-}
-
-func (indent Indent) Println(args ...interface{}) {
-	fmt.Print(indent)
-	fmt.Println(args...)
-}
-
-func (indent Indent) Printf(sfmt string, args ...interface{}) {
-	fmt.Print(indent)
-	fmt.Printf(sfmt, args...)
-}
-
-var NoIndent Indent
-
-type ScopeType int
-
-const (
-	SModule ScopeType = iota
-	SClass
-	SMethod
-	SFunction
-)
 
 type Scope struct {
-	indent    Indent // current indentation level
-	classname string // name of the current class, used for class/object methods
+	level int // nesting level
+	vars  map[string]struct{}
 }
 
-func (s *Scope) Incr() {
-	s.indent = s.indent.Incr()
+func NewScope() *Scope {
+	return &Scope{vars: make(map[string]struct{})}
 }
 
-func (s *Scope) Decr() {
-	s.indent = s.indent.Decr()
+func (s *Scope) newVar(v string) bool {
+	if _, ok := s.vars[v]; ok {
+		return true
+	}
+
+	s.vars[v] = struct{}{}
+	return false
 }
 
-func (s *Scope) strBoolOp(op ast.BoolOpNumber) string {
+func (s *Scope) goBoolOp(op ast.BoolOpNumber) *jen.Statement {
 	switch op {
 	case ast.And:
-		return "&&"
+		return jen.Op("&&")
 
 	case ast.Or:
-		return "||"
+		return jen.Op("||")
 	}
 
 	return unknown("BOOLOP", op.String())
 }
 
-func (s *Scope) strUnary(op ast.UnaryOpNumber) string {
+func (s *Scope) goUnary(op ast.UnaryOpNumber) *jen.Statement {
 	switch op {
 	case ast.Not:
-		return "!"
+		return jen.Op("!")
 
 	case ast.UAdd:
-		return "+"
+		return jen.Op("+")
 
 	case ast.USub:
-		return "-"
+		return jen.Op("-")
 	}
 
 	return unknown("UNARY", op.String())
 }
 
-func (s *Scope) strOp(op ast.OperatorNumber) string {
-	switch op {
-	case ast.Add:
-		return "+"
-	case ast.Sub:
-		return "-"
-	case ast.Mult:
-		return "*"
-	case ast.Div:
-		return "/"
-	case ast.Modulo:
-		return "%"
-	case ast.Pow:
-		return "**"
-	case ast.LShift:
-		return "<<"
-	case ast.RShift:
-		return ">>"
-	case ast.BitOr:
-		return "|"
-	case ast.BitXor:
-		return "^"
-	case ast.BitAnd:
-		return "&"
-	case ast.FloorDiv:
-		return "//"
-	}
-
-	return unknown("OP", op.String())
+func (s *Scope) goOp(op ast.OperatorNumber) *jen.Statement {
+	return s.goOpExt(op, "")
 }
 
-func (s *Scope) strCmpOp(op ast.CmpOp) string {
+func (s *Scope) goOpExt(op ast.OperatorNumber, ext string) *jen.Statement {
+	switch op {
+	case ast.Add:
+		return jen.Op("+" + ext)
+	case ast.Sub:
+		return jen.Op("-" + ext)
+	case ast.Mult:
+		return jen.Op("*" + ext)
+	case ast.Div:
+		return jen.Op("/" + ext)
+	case ast.Modulo:
+		return jen.Op("%" + ext)
+	case ast.Pow:
+		return jen.Op("**" + ext)
+	case ast.LShift:
+		return jen.Op("<<" + ext)
+	case ast.RShift:
+		return jen.Op(">>" + ext)
+	case ast.BitOr:
+		return jen.Op("|" + ext)
+	case ast.BitXor:
+		return jen.Op("^" + ext)
+	case ast.BitAnd:
+		return jen.Op("&" + ext)
+	case ast.FloorDiv:
+		return jen.Op("//" + ext)
+	}
+
+	return unknown("OP", op.String()+ext)
+}
+
+func (s *Scope) goCmpOp(op ast.CmpOp) *jen.Statement {
 	switch op {
 	case ast.Eq:
-		return "=="
+		return jen.Op("==")
 	case ast.NotEq:
-		return "!="
+		return jen.Op("!=")
 	case ast.Lt:
-		return "<"
+		return jen.Op("<")
 	case ast.LtE:
-		return "<="
+		return jen.Op("<=")
 	case ast.Gt:
-		return ">"
+		return jen.Op(">")
 	case ast.GtE:
-		return ">="
+		return jen.Op(">=")
 	case ast.Is:
-		return "==" // is
+		return jen.Op("==") // is
 	case ast.IsNot:
-		return "!=" // is not
+		return jen.Op("!=") // is not
 	case ast.In:
-		return "in"
+		return jen.Op("in")
 	case ast.NotIn:
-		return "not in"
+		return jen.Op("not in")
 	}
 
 	return unknown("CMPOP", op.String())
 }
 
-func (s *Scope) compOps(ops []ast.CmpOp, exprs []ast.Expr) string {
-	if len(ops) == 0 {
-		return ""
-	}
-
-	return fmt.Sprintf(" %v %v", s.strCmpOp(ops[0]), s.strExpr(exprs[0])) + s.compOps(ops[1:], exprs[1:])
-}
-
-func (s *Scope) strSlice(name ast.Expr, value ast.Slicer) string {
-	ret := fmt.Sprintf("%v[", s.strExpr(name))
+func (s *Scope) goSlice(name ast.Expr, value ast.Slicer) *jen.Statement {
+	stmt := s.goExpr(name)
+	start := jen.Empty()
+	end := jen.Empty()
 
 	switch sl := value.(type) {
 	case *ast.Slice:
 		if sl.Lower != nil {
-			ret += s.strExpr(sl.Lower)
+			start = s.goExpr(sl.Lower)
 		}
-		ret += ":"
 		if sl.Upper != nil {
-			ret += s.strExpr(sl.Lower)
+			end = s.goExpr(sl.Lower)
 		}
 		if sl.Step != nil {
-			ret += ":" + s.strExpr(sl.Lower)
+			panic("step index not implemented")
 		}
+		stmt.Add(jen.Index(start, end))
 
 	case *ast.Index:
-		ret += s.strExpr(sl.Value)
+		stmt.Add(jen.Index(s.goExpr(sl.Value)))
 
 	case *ast.ExtSlice:
 		panic("ExtSlice not implemented")
 	}
 
-	return ret + "]"
+	return stmt
 }
 
-func (s *Scope) strIdentifiers(l []ast.Identifier) string {
-	var ls []string
-	for _, i := range l {
-		ls = append(ls, strId(i))
-	}
-	return strings.Join(ls, ", ")
+func (s *Scope) goIdentifiers(l []ast.Identifier) *jen.Statement {
+	return jen.ListFunc(func(g *jen.Group) {
+		for _, i := range l {
+			g.Add(goId(i))
+		}
+	})
 }
 
-func (s *Scope) strExprList(l []ast.Expr, sep string) string {
-	var exprs []string
-	for _, e := range l {
-		exprs = append(exprs, s.strExpr(e))
-	}
-	return strings.Join(exprs, sep)
+func (s *Scope) goInitialized(otype *jen.Statement, values []ast.Expr) *jen.Statement {
+	return jen.Parens(otype.Clone().ValuesFunc(func(g *jen.Group) {
+		for _, v := range values {
+			g.Add(s.goExpr(v))
+		}
+	}))
 }
 
-func (s *Scope) strExprOrList(expr ast.Expr) string {
+func (s *Scope) goExprList(values []ast.Expr) *jen.Statement {
+	return jen.ListFunc(func(g *jen.Group) {
+		for _, v := range values {
+			g.Add(s.goExpr(v))
+		}
+	})
+}
+
+func (s *Scope) goExprOrList(expr ast.Expr) *jen.Statement {
 	if tuple, ok := expr.(*ast.Tuple); ok {
-		return s.strExpr(tuple.Elts)
+		return s.goExpr(tuple.Elts)
 	}
-
-	return s.strExpr(expr)
+	return s.goExpr(expr)
 }
 
 func isNone(expr ast.Expr) bool {
@@ -260,194 +240,218 @@ func isNone(expr ast.Expr) bool {
 	return false
 }
 
-func (s *Scope) strExpr(expr interface{}) string {
+func (s *Scope) gomprehension(c ast.Comprehension) *jen.Statement {
+	target := s.goExprOrList(c.Target)
+	if _, ok := c.Target.(*ast.Tuple); !ok { // single value
+		target = jen.List(jen.Op("_"), s.goExpr(c.Target))
+	}
+	stmt := jen.For(target.Op(":=").Range().Add(s.goExpr(c.Iter)))
+	if len(c.Ifs) > 0 {
+		cond := s.goExpr(c.Ifs[0])
+		for _, c := range c.Ifs[1:] {
+			cond.Add(jen.Op("&&"))
+			cond.Add(s.goExpr(c))
+		}
+		stmt = stmt.Block(jen.If(cond))
+	}
+
+	return stmt
+}
+
+func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 	if verbose {
 		fmt.Printf("XXX %T %#v\n\n", expr, expr)
 	}
 
 	switch v := expr.(type) {
 	case []ast.Expr:
-		return s.strExprList(v, ", ")
+		return s.goExprList(v)
 
 	case []*ast.Keyword:
-		var kwords []string
-		for _, k := range v {
-			kwords = append(kwords, fmt.Sprintf("%v=%v", strId(k.Arg), s.strExpr(k.Value)))
-		}
-		return strings.Join(kwords, ", ")
+		return jen.ListFunc(func(g *jen.Group) {
+			for _, k := range v {
+				g.Add(goId(k.Arg))
+				g.Add(jen.Commentf("/*=%v*/", s.goExpr(k.Value).GoString()))
+			}
+		})
 
 	case *ast.Tuple:
-		return "Tuple{" + s.strExprList(v.Elts, ", ") + "}"
+		return s.goInitialized(goTuple, v.Elts)
 
 	case *ast.List:
-		return "List{" + s.strExprList(v.Elts, ", ") + "}"
+		return s.goInitialized(goList, v.Elts)
 
 	case *ast.Dict:
-		var kvals []string
-		for i, k := range v.Keys {
-			kvals = append(kvals, fmt.Sprintf("%v: %v", s.strExpr(k), s.strExpr(v.Values[i])))
-		}
-		return "Dict{" + strings.Join(kvals, ", ") + "}"
+		return jen.Parens(goDict.Clone().Values(jen.DictFunc(func(d jen.Dict) {
+			for i, k := range v.Keys {
+				d[s.goExpr(k)] = s.goExpr(v.Values[i])
+			}
+		})))
 
 	case *ast.Num:
-		s, _ := py.Str(v.N)
-		return string(s.(py.String))
+		switch n := v.N.(type) {
+		case py.Int:
+			return jen.Lit(int(n))
+
+		case py.Float:
+			return jen.Lit(float64(n))
+
+		case py.Complex:
+			return jen.Lit(complex128(n))
+
+		default:
+			panic("invalid number")
+		}
 
 	case ast.Identifier:
-		return strId(v)
+		return goId(v)
 
 	case *ast.NameConstant:
 		switch v.Value {
 		case py.None:
-			return "nil"
+			return jen.Nil()
 
 		case py.True:
-			return "true"
+			return jen.True()
 
 		case py.False:
-			return "false"
+			return jen.False()
 
 		default:
 			s, _ := py.Str(v.Value)
-			return string(s.(py.String))
+			return jen.Lit(string(s.(py.String)))
 		}
 
 	case *ast.Str:
-		return strconv.Quote(string(v.S))
+		return jen.Lit(string(v.S))
 
 	case *ast.UnaryOp:
 		if v.Op == ast.Invert {
-			return fmt.Sprintf("-(%v+1)", s.strUnary(v.Op), s.strExpr(v.Operand))
+			return s.goUnary(v.Op).Parens(s.goExpr(v.Operand).Op("+").Lit(1))
 		} else {
-			return fmt.Sprintf("%v%v", s.strUnary(v.Op), s.strExpr(v.Operand))
+			return s.goUnary(v.Op).Add(s.goExpr(v.Operand))
 		}
 
 	case *ast.BoolOp:
-		var bexprs []string
-		for _, e := range v.Values {
-			bexprs = append(bexprs, s.strExpr(e))
+		stmt := s.goExpr(v.Values[0])
+		for _, x := range v.Values[1:] {
+			stmt.Add(s.goBoolOp(v.Op))
+			stmt.Add(s.goExpr(x))
 		}
-		return strings.Join(bexprs, " "+s.strBoolOp(v.Op)+" ")
+		return stmt
 
 	case *ast.BinOp:
 		if v.Op == ast.Modulo { // %
 			if _, ok := v.Left.(*ast.Str); ok { // this is really a formatting operation
-				params := s.strExprOrList(v.Right)
-				return fmt.Sprintf("fmt.Sprintf(%v, %v)", s.strExpr(v.Left), params)
+				printfunc := jen.Qual("fmt", "Sprintf")
+				printfmt := s.goExpr(v.Left)
+				params := s.goExpr(v.Right)
+				if tuple, ok := v.Right.(*ast.Tuple); ok {
+					params = s.goExprList(tuple.Elts)
+				}
+				return printfunc.Params(printfmt, params)
 			}
 		}
 
-		return fmt.Sprintf("%v %v %v", s.strExpr(v.Left), s.strOp(v.Op), s.strExpr(v.Right))
+		return s.goExpr(v.Left).Add(s.goOp(v.Op)).Add(s.goExpr(v.Right))
 
 	case *ast.Compare:
-		return s.strExpr(v.Left) + s.compOps(v.Ops, v.Comparators)
+		stmt := s.goExpr(v.Left)
+		for i, op := range v.Ops {
+			stmt.Add(s.goCmpOp(op))
+			stmt.Add(s.goExpr(v.Comparators[i]))
+		}
+		return stmt
 
 	case *ast.Name:
-		return strId(v.Id)
+		return goId(v.Id)
 
 	case *ast.Attribute:
-		return convertName(s.strExpr(v.Value) + "." + string(v.Attr))
+		return s.goExpr(v.Value).Dot(string(v.Attr))
 
 	case *ast.Subscript:
-		return s.strSlice(v.Value, v.Slice)
+		return s.goSlice(v.Value, v.Slice)
 
 	case *ast.Call:
-		return s.strCall(v)
+		return s.goCall(v)
 
 	case *ast.Lambda:
-		return fmt.Sprintf("func(%v) {  return %s; }", s.strFunctionArguments(v.Args, false), s.strExpr(v.Body))
+		return jen.Func().Params(s.goFunctionArguments(v.Args, false)).Block(s.goExpr(v.Body)).Call()
 
 	case *ast.IfExp:
-		return fmt.Sprintf("func() { if %v { return %v } else { return %v }}()",
-			s.strExpr(v.Test), s.strExpr(v.Body), s.strExpr(v.Orelse))
-
-	case ast.Comprehension:
-		target := s.strExprOrList(v.Target)
-		if !strings.Contains(target, ", ") { // k,v
-			target = "_, " + target
-		}
-		ret := fmt.Sprintf("for %v := range %v { ", target, s.strExpr(v.Iter))
-		close := "}"
-		if len(v.Ifs) > 0 {
-			ret += fmt.Sprintf("if %v { ", s.strExprList(v.Ifs, " && "))
-			close += "}"
-		}
-
-		return ret + "@elt@ " + close
+		return jen.Func().Params().Block(
+			jen.If(s.goExpr(v.Test)).
+				Block(jen.Return(s.goExpr(v.Body))).
+				Else().
+				Block(jen.Return(s.goExpr(v.Orelse)))).Call()
 
 	case *ast.ListComp:
-		inner := "@elt@"
-
-		for _, g := range v.Generators {
-			gen := s.strExpr(g)
-			inner = strings.Replace(inner, "@elt@", gen, 1)
+		body := s.gomprehension(v.Generators[0])
+		for _, g := range v.Generators[1:] {
+			body.Add(jen.Block(s.gomprehension(g)))
 		}
-
-		gen := fmt.Sprintf("lc = append(lc, %v)", s.strExpr(v.Elt))
-		return "func() (lc List) { " + strings.Replace(inner, "@elt@", gen, 1) + "; return }()"
+		body.Add(jen.Block(jen.Id("lc").Op("=").Append(jen.Id("lc"), s.goExpr(v.Elt))))
+		return jen.Func().Params().Params(jen.Id("lc").Add(goList)).Block(body, jen.Return(jen.Id("lc"))).Call()
 
 	case *ast.DictComp:
-		inner := "@elt@"
-
-		for _, g := range v.Generators {
-			gen := s.strExpr(g)
-			inner = strings.Replace(inner, "@elt@", gen, 1)
+		body := s.gomprehension(v.Generators[0])
+		for _, g := range v.Generators[1:] {
+			body.Add(jen.Block(s.gomprehension(g)))
 		}
-
-		gen := fmt.Sprintf("mm[%v] = %v", s.strExpr(v.Key), s.strExpr(v.Value))
-		return "func() (mm Dict) { mm = Dict{}; " + strings.Replace(inner, "@elt@", gen, 1) + "; return }()"
+		body.Add(jen.Block(jen.Id("mm").Index(s.goExpr(v.Key)).Op("=").Add(s.goExpr(v.Value))))
+		return jen.Func().Params().Params(jen.Id("mm").Add(goDict)).Block(
+			jen.Id("mm").Op("=").Add(goDict).Values(),
+			body,
+			jen.Return()).Call()
 
 	case *ast.GeneratorExp:
-		inner := "@elt@"
-
-		for _, g := range v.Generators {
-			gen := s.strExpr(g)
-			inner = strings.Replace(inner, "@elt@", gen, 1)
+		body := s.gomprehension(v.Generators[0])
+		for _, g := range v.Generators[1:] {
+			body.Add(jen.Block(s.gomprehension(g)))
 		}
-
-		gen := fmt.Sprintf("c <- %v", s.strExpr(v.Elt))
-		return "func() (c chan Any) { c = make(chan Any); go func() { " +
-			strings.Replace(inner, "@elt@", gen, 1) +
-			"; close(c) }(); return }()"
+		body.Add(jen.Id("c").Op("<-")).Add(s.goExpr(v.Elt))
+		return jen.Func().Params().Params(jen.Id("c").Chan().Id("Any")).Block(
+			jen.Id("c").Op("=").Make(jen.Chan().Id("Any")),
+			jen.Go().Func().Params().Block(body, jen.Close(jen.Id("c"))).Call(),
+			jen.Return(),
+		).Call()
 	}
 
 	return unknown("EXPR", expr)
 }
 
-func convertName(s string) string {
+func goId(id ast.Identifier) *jen.Statement {
+	s := string(id)
+
 	switch {
 	case s == "sys.stdin":
-		s = "os.Stdin"
+		return jen.Qual("os", "Stdin")
 
 	case s == "sys.stdout":
-		s = "os.Stdout"
+		return jen.Qual("os", "Stdout")
 
 	case s == "sys.stderr":
-		s = "os.Stderr"
+		return jen.Qual("os", "Stderr")
 
 	case strings.HasPrefix(s, "sys.stdin."):
-		s = "os.Stdin." + s[10:]
+		return jen.Qual("os", "Stdin").Id(s[10:])
 
 	case strings.HasPrefix(s, "sys.stdout."):
-		s = "os.Stdout." + s[11:]
+		return jen.Qual("os", "Stdout").Id(s[11:])
 
 	case strings.HasPrefix(s, "sys.stderr."):
-		s = "os.Stderr." + s[11:]
+		return jen.Qual("os", "Stderr").Id(s[11:])
 	}
 
-	return rename(s)
+	return jen.Id(rename(s))
 }
 
-func strId(id ast.Identifier) string {
-	return convertName(string(id))
-}
-
-func (s *Scope) strFunctionArguments(args *ast.Arguments, skipReceiver bool) string {
+func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen.Statement {
 	if args == nil {
-		return ""
+		return jen.Null()
 	}
 
-	var buf strings.Builder
+	var params []jen.Code
 
 	aargs := args.Args
 	if skipReceiver && len(aargs) > 0 {
@@ -455,174 +459,172 @@ func (s *Scope) strFunctionArguments(args *ast.Arguments, skipReceiver bool) str
 	}
 
 	for _, arg := range aargs {
-		if buf.Len() > 0 {
-			buf.WriteString(", ")
+		p := goId(arg.Arg)
+		if arg.Annotation != nil {
+			p.Add(s.goExpr(arg.Annotation))
+		} else {
+			p.Add(jen.Id("Any"))
 		}
 
-		buf.WriteString(strId(arg.Arg))
-		buf.WriteString(" ")
-		if arg.Annotation != nil {
-			buf.WriteString(s.strExpr(arg.Annotation))
-		} else {
-			buf.WriteString(" Any") // can't guess argument types
-		}
+		params = append(params, p)
 	}
 
 	for i, arg := range args.Kwonlyargs {
-		if buf.Len() > 0 {
-			buf.WriteString(", ")
-		}
-
+		p := goId(arg.Arg)
 		if arg.Annotation != nil {
-			buf.WriteString(s.strExpr(arg.Annotation))
-			buf.WriteString(" ")
+			p.Add(s.goExpr(arg.Annotation))
+		} else {
+			p.Add(jen.Id("Any"))
 		}
 
-		buf.WriteString(strId(arg.Arg))
-		buf.WriteString(" Any = ") // here I could guess based on the default values
-		buf.WriteString("=")
-		buf.WriteString(s.strExpr(args.KwDefaults[i]))
+		p.Add(jen.Commentf("/*=%v*/", s.goExpr(args.KwDefaults[i]).GoString()))
+		params = append(params, p)
 	}
 
 	if args.Vararg != nil {
-		if buf.Len() > 0 {
-			buf.WriteString(", ")
+		p := goId(args.Vararg.Arg).Op("...")
+		if args.Vararg.Annotation != nil {
+			p.Add(s.goExpr(args.Vararg.Annotation))
+		} else {
+			p.Add(jen.Id("Any"))
 		}
 
-		buf.WriteString(strId(args.Vararg.Arg)) // annotation ?
-		buf.WriteString(" ...Any")
+		params = append(params, p)
 	}
 
 	if args.Kwarg != nil {
-		if buf.Len() > 0 {
-			buf.WriteString(", ")
+		p := goId(args.Kwarg.Arg).Op("...")
+		if args.Vararg.Annotation != nil {
+			p.Add(s.goExpr(args.Kwarg.Annotation))
+		} else {
+			p.Add(jen.Id("Any"))
 		}
 
-		buf.WriteString(strId(args.Kwarg.Arg)) // annotation ?
-		buf.WriteString(" ...Any")
+		params = append(params, p)
 	}
 
 	// XXX: what is arg.Defaults ?
 
-	return buf.String()
+	return jen.List(params...)
 }
 
-func (s *Scope) strCall(call *ast.Call) string {
-	var buf strings.Builder
+func (s *Scope) goCallParams(params ...ast.Expr) *jen.Statement {
+	return jen.ParamsFunc(func(g *jen.Group) {
+		for _, p := range params {
+			g.Add(s.goExpr(p))
+		}
+	})
+}
 
-	cfunc := s.strExpr(call.Func)
+func (s *Scope) goCall(call *ast.Call) *jen.Statement {
+	cfunc := s.goExpr(call.Func)
 
-	switch {
-	case cfunc == "print":
-		cfunc = "fmt.Println" // check for print parameters, could be fmt.Print, fmt.Fprint, etc.
+	switch ff := call.Func.(type) {
+	case *ast.Name:
+		switch string(ff.Id) {
+		case "print":
+			cfunc = jen.Qual("fmt", "Println") // check for print parameters, could be fmt.Print, fmt.Fprint, etc.
 
-	case cfunc == "open":
-		cfunc = "os.Open"
+		case "open":
+			cfunc = jen.Qual("os", "Open") // could also be os.OpenFile
 
-	case strings.HasSuffix(cfunc, ".read"):
-		cfunc = strings.TrimSuffix(cfunc, ".read") + ".Read"
+		case "isinstance": // isinstance(obj, type)
+			if len(call.Args) == 2 {
+				obj := s.goExpr(call.Args[0])
+				otype := s.goExpr(call.Args[1])
+				return jen.Func().Params().Bool().Block(
+					jen.Commentf("isinstance(%v, %v)", obj.GoString(), otype.GoString()),
+					jen.List(jen.Op("_"), jen.Id("ok")).Op(":=").Add(obj).Assert(otype),
+					jen.Return(jen.Id("ok")),
+				).Call()
+			}
+		}
 
-	case strings.HasSuffix(cfunc, ".write"):
-		cfunc = strings.TrimSuffix(cfunc, ".write") + ".Write"
+	case *ast.Attribute:
+		switch string(ff.Attr) {
+		case "read":
+			cfunc = s.goExpr(ff.Value).Dot("Read")
 
-	case strings.HasSuffix(cfunc, ".close"):
-		cfunc = strings.TrimSuffix(cfunc, ".close") + ".Close"
+		case "write":
+			cfunc = s.goExpr(ff.Value).Dot("Write")
 
-	case strings.HasSuffix(cfunc, ".items"):
-		return strings.TrimSuffix(cfunc, ".items")
+		case "close":
+			cfunc = s.goExpr(ff.Value).Dot("Close")
 
-	case strings.HasSuffix(cfunc, ".upper"): // check for arguments
-		cfunc = strings.TrimSuffix(cfunc, ".upper")
-		return fmt.Sprintf("strings.ToUpper(%v)", cfunc)
+		case "items": // as in `for k, v in dict(a=1).items()`
+			return s.goExpr(ff.Value) // remove items
 
-	case strings.HasSuffix(cfunc, ".lower"): // check for arguments
-		cfunc = strings.TrimSuffix(cfunc, ".lower")
-		return fmt.Sprintf("strings.ToLower(%v)", cfunc)
+		case "upper":
+			return jen.Qual("strings", "ToUpper").Call(s.goExpr(ff.Value))
 
-	case strings.HasSuffix(cfunc, ".startswith"):
-		cfunc = fmt.Sprintf("strings.HasPrefix(%v, ", cfunc)
+		case "lower":
+			return jen.Qual("strings", "ToLower").Call(s.goExpr(ff.Value))
 
-	case strings.HasSuffix(cfunc, ".endswith"):
-		cfunc = fmt.Sprintf("strings.HasSuffix(%v, ", cfunc)
+		case "startswith":
+			if len(call.Args) == 1 {
+				return jen.Qual("strings", "HasPrefix").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
+			}
 
-	case cfunc == "isinstance": // isinstance(obj, type)
-		if len(call.Args) == 2 {
-			obj := s.strExpr(call.Args[0])
-			otype := s.strExpr(call.Args[1])
-			return fmt.Sprintf("func() bool { _, ok := %v.(%v); return ok }()", obj, otype)
+		case "endswith":
+			if len(call.Args) == 1 {
+				return jen.Qual("strings", "HasSuffix").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
+			}
+
+		case "strip":
+			if len(call.Args) == 0 {
+				return jen.Qual("strings", "TrimSpace").Call(s.goExpr(ff.Value))
+			}
 		}
 	}
 
-	buf.WriteString(cfunc)
-	buf.WriteString("(")
-
-	args := false
+	var args []jen.Code
 
 	for _, arg := range call.Args {
-		if args {
-			buf.WriteString(", ")
-		} else {
-			args = true
-		}
-
-		buf.WriteString(s.strExpr(arg))
+		args = append(args, s.goExpr(arg))
 	}
 
 	if len(call.Keywords) > 0 {
-		if args {
-			buf.WriteString(", ")
-		} else {
-			args = true
-		}
-
-		buf.WriteString(s.strExpr(call.Keywords))
+		args = append(args, s.goExpr(call.Keywords))
 	}
 
 	if call.Starargs != nil {
-		if args {
-			buf.WriteString(", ")
-		} else {
-			args = true
-		}
-
-		buf.WriteString("...")
-		buf.WriteString(s.strExpr(call.Starargs))
+		args = append(args, s.goExpr(call.Starargs).Op("..."))
 	}
 
 	if call.Kwargs != nil {
-		if args {
-			buf.WriteString(", ")
-		} else {
-			args = true
-		}
-
-		buf.WriteString("...")
-		buf.WriteString(s.strExpr(call.Kwargs))
+		args = append(args, s.goExpr(call.Kwargs).Op("..."))
 	}
 
-	// this is not adding a newline, so we skip it for now
-	// if strings.Contains(buf.String(), "rintln(fmt.Sprintf(") {
-	// 	// simplify Println(Sprintf)
-	// 	return strings.Replace(buf.String(), "rintln(fmt.Sprintf(", "rintf(", 1)
-	// }
-
-	buf.WriteString(")")
-	return buf.String()
+	return cfunc.Call(args...)
 }
 
-func (s *Scope) printBody(body []ast.Stmt, nested bool) {
-	if !nested {
-		s.Incr()
-		defer s.Decr()
+func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
+	p, _ := s.parseBodyList(classname, body)
+	return p
+}
+
+func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement, []*jen.Statement) {
+	parsed := jen.Null()
+	stmts := []*jen.Statement{}
+
+	add := func(s *jen.Statement) {
+		if verbose {
+			log.Println("GGG", s.GoString())
+		}
+
+		parsed.Add(s)
+		stmts = append(stmts, s)
 	}
 
-	for _, stmt := range body {
+	for i, stmt := range body {
+		if i > 0 {
+			add(jen.Line())
+		}
+
 		if expr, ok := stmt.(*ast.ExprStmt); ok {
 			if str, ok := expr.Value.(*ast.Str); ok {
 				// a top level string expression is a __doc__ string
-				s.indent.Println("/*")
-				s.indent.Println(str.S)
-				s.indent.Println("*/")
+				add(jen.Comment(string(str.S)))
 				continue
 			}
 		}
@@ -631,263 +633,239 @@ func (s *Scope) printBody(body []ast.Stmt, nested bool) {
 		case *ast.ImportFrom:
 			for _, i := range v.Names {
 				if i.AsName != "" {
-					s.indent.Printf("import %v \"%v.%v\"\n", i.AsName, v.Module, i.Name)
+					add(jen.Commentf("import %v \"%v.%v\"", i.AsName, v.Module, i.Name))
 				} else {
-					s.indent.Printf("import \"%v/%v\"\n", v.Module, i.Name)
+					add(jen.Commentf("import \"%v.%v\"", v.Module, i.Name))
 				}
 			}
 
 		case *ast.Import:
 			for _, i := range v.Names {
 				if i.AsName != "" {
-					s.indent.Printf("import %s %q\n", i.AsName, i.Name)
+					add(jen.Commentf("import %s %q", i.AsName, i.Name))
 				} else {
-					s.indent.Printf("import %q\n", i.Name)
+					add(jen.Commentf("import %q", i.Name))
 				}
 			}
 
 		case *ast.FunctionDef:
 			for _, d := range v.DecoratorList {
-				s.indent.Printf("// @%v\n", s.strExpr(d))
+				add(jen.Commentf("// @%v\n", s.goExpr(d).GoString()))
 			}
 
-			receiver := ""
-			if s.classname != "" {
-				receiver = fmt.Sprintf("(self *%v) ", s.classname)
+			var receiver jen.Code
+			var returns jen.Code
+
+			if classname != "" {
+				receiver = jen.Params(jen.Id("self").Id(classname))
 			}
 
-			returns := ""
 			if v.Returns != nil && !isNone(v.Returns) {
-				returns = s.strExpr(v.Returns) + " "
-				if tuple, ok := v.Returns.(*ast.Tuple); ok {
-					returns = "(" + s.strExpr(tuple.Elts) + ") "
-				}
+				returns = jen.Params(s.goExprOrList(v.Returns))
 			}
-			s.indent.Printf("func %v%v(%v) %v{\n",
-				receiver,
-				s.strExpr(v.Name),
-				s.strFunctionArguments(v.Args, receiver != ""),
-				returns)
-			s.printBody(v.Body, false)
-			s.indent.Println("}")
+
+			stmt := jen.Func()
+			if receiver != nil {
+				stmt.Add(receiver)
+			}
+			stmt.Add(s.goExpr(v.Name))
+			stmt.Params(s.goFunctionArguments(v.Args, receiver != nil))
+			if returns != nil {
+				stmt.Add(returns)
+			}
+			stmt.Block(s.parseBody("", v.Body))
+			add(stmt)
 
 		case *ast.ClassDef:
-			classname := strId(v.Name)
-
 			for _, d := range v.DecoratorList {
-				s.indent.Printf("// @%v\n", s.strExpr(d))
+				add(jen.Commentf("// @%v\n", s.goExpr(d).GoString()))
 			}
 
-			s.indent.Printf("type %v struct {", classname)
+			classdef := jen.Type().Add(goId(v.Name)).StructFunc(func(g *jen.Group) {
+				cdefs := ""
 
-			if len(v.Bases) > 0 || len(v.Keywords) > 0 {
-				fmt.Printf(" //")
+				if len(v.Bases) > 0 || len(v.Keywords) > 0 {
+					if len(v.Bases) > 0 {
+						cdefs += " " + s.goExpr(v.Bases).GoString()
+					}
 
-				if len(v.Bases) > 0 {
-					fmt.Printf(" %v", s.strExpr(v.Bases))
+					if len(v.Keywords) > 0 {
+						cdefs += " " + s.goExpr(v.Keywords).GoString()
+					}
 				}
 
-				if len(v.Keywords) > 0 {
-					fmt.Printf(" %v", s.strExpr(v.Keywords))
-				}
-			}
-			fmt.Println()
-			s.indent.Println("}")
+				g.Add(jen.Commentf("//%v", cdefs))
+			})
 
-			if len(v.Body) == 1 {
+			add(classdef.Line())
+
+			switch len(v.Body) {
+			case 0:
+				continue
+
+			case 1:
 				if _, ok := v.Body[0].(*ast.Pass); ok {
-					break
+					continue
 				}
 			}
-
-			fmt.Println()
-
-			cs := s
-			cs.classname = classname
-			cs.printBody(v.Body, true)
+			add(s.parseBody(string(v.Name), v.Body))
 
 		case *ast.Assign:
-			s.indent.Printf("%v = %v\n", s.strExpr(v.Targets), s.strExpr(v.Value))
+			add(s.goExpr(v.Targets).Op("=").Add(s.goExpr(v.Value)))
 
 		case *ast.AugAssign:
-			s.indent.Printf("%v %v= %v\n", s.strExpr(v.Target), s.strOp(v.Op), s.strExpr(v.Value))
+			add(s.goExpr(v.Target).Add(s.goOpExt(v.Op, "=")).Add(s.goExpr(v.Value)))
 
 		case *ast.ExprStmt:
-			s.indent.Println(s.strExpr(v.Value))
+			add(s.goExpr(v.Value)) //.Line()
 
 		case *ast.Pass:
-			s.indent.Println("// pass")
+			add(jen.Comment("pass"))
 
 		case *ast.Return:
 			if v.Value == nil {
-				s.indent.Println("return")
+				add(jen.Return())
 			} else {
-				s.indent.Println("return", s.strExprOrList(v.Value))
+				add(jen.Return(s.goExprOrList(v.Value)))
 			}
 
 		case *ast.If:
-			indentif := s.indent
-			if nested {
-				indentif = NoIndent
-			}
-
-			indentif.Printf("if %v {\n", s.strExpr(v.Test))
-			s.printBody(v.Body, false)
-
-			shouldclose := len(v.Orelse) == 0
+			stmt := jen.If(s.goExpr(v.Test))
+			stmt.Block(s.parseBody("", v.Body))
 
 			for i, e := range v.Orelse {
+				stmt.Add(jen.Else())
 				if _, ok := e.(*ast.If); ok {
-					s.indent.Printf("} else ")
-					s.printBody([]ast.Stmt{e}, true)
+					stmt.Add(s.parseBody("", []ast.Stmt{e}))
 					continue
 				}
 
-				s.indent.Println("} else {")
-				s.printBody(v.Orelse[i:], false)
-				shouldclose = true
+				stmt.Add(s.parseBody("", v.Orelse[i:]))
 				break
 			}
-
-			if shouldclose {
-				s.indent.Println("}")
-			}
+			add(stmt)
 
 		case *ast.For:
-			if c, ok := v.Iter.(*ast.Call); ok { // check for "for x in range(n)"
-				f := s.strExpr(c.Func)
+			var stmt *jen.Statement
 
-				if f == "range" {
+			if c, ok := v.Iter.(*ast.Call); ok { // check for "for x in range(n)"
+				if n, ok := c.Func.(*ast.Name); ok && string(n.Id) == "range" {
 					if len(c.Args) < 1 || len(c.Args) > 3 {
-						panic(f + " expects 1 to 3 arguments")
+						panic("range expects 1 to 3 arguments")
 					}
 
-					start := "0"
-					step := "1"
+					start := jen.Lit(0)
+					step := jen.Lit(1)
 
-					var stop string
+					var stop jen.Code
 
 					if len(c.Args) == 1 {
-						stop = s.strExpr(c.Args[0])
+						stop = s.goExpr(c.Args[0])
 					} else {
-						start = s.strExpr(c.Args[0])
-						stop = s.strExpr(c.Args[1])
+						start = s.goExpr(c.Args[0])
+						stop = s.goExpr(c.Args[1])
 
 						if len(c.Args) > 2 {
-							step = s.strExpr(c.Args[2])
+							step = s.goExpr(c.Args[2])
 						}
 					}
 
-					t := s.strExpr(v.Target)
-					s.indent.Printf("for %v := %v; %v < %v; %v += %v {\n",
-						t, start, t, stop, t, step)
+					t := s.goExpr(v.Target)
+
+					stmt = jen.For(t.Op(":=").Add(start),
+						t.Op("<").Add(stop),
+						t.Op("+=").Add(step))
 				} else {
-					t := s.strExpr(v.Target)
-					if tuple, ok := v.Target.(*ast.Tuple); ok {
-						t = s.strExpr(tuple.Elts)
-					}
-					s.indent.Printf("for %v := range %v {\n", t, s.strExpr(v.Iter))
+					t := s.goExprOrList(v.Target)
+					stmt = jen.For(t.Op(":=").Range().Add(s.goExpr(v.Iter)))
 				}
 			} else { // for x in iterable
-				s.indent.Printf("for %v := range %v {\n", s.strExpr(v.Target), s.strExpr(v.Iter))
+				stmt = jen.For(s.goExpr(v.Target).Op(":=").Range().Add(s.goExpr(v.Iter)))
 			}
 
-			s.printBody(v.Body, false)
+			stmt.Block(s.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
-				s.indent.Println("} else {")
-				s.printBody(v.Orelse, false)
+				stmt.Else().Block(s.parseBody("", v.Orelse))
 			}
-			s.indent.Println("}")
+			add(stmt)
 
 		case *ast.While:
-			s.indent.Printf("for %v {\n", s.strExpr(v.Test))
-			s.printBody(v.Body, false)
+			stmt := jen.For(s.goExpr(v.Test)).Block(s.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
-				s.indent.Println("} else {")
-				s.printBody(v.Orelse, false)
+				stmt.Else().Block(s.parseBody("", v.Orelse))
 			}
-			s.indent.Println("}")
+			add(stmt)
 
 		case *ast.Try:
-			s.indent.Println("if err := func() PyException { // try")
-			s.printBody(v.Body, false)
-			s.indent.Println("}(); err != nil {")
+			stmt := jen.If(
+				jen.Err().Op(":=").Func().Params().Params(goException).Block(
+					jen.Comment("try"),
+					s.parseBody("", v.Body),
+				).Call(),
+				jen.Err().Op("!=").Nil())
+
+			body := jen.Null()
 
 			if len(v.Handlers) > 0 {
-				s.Incr()
-				s.indent.Println("switch err { // except")
+				body = jen.Switch(jen.Err()).BlockFunc(func(g *jen.Group) {
+					g.Add(jen.Comment("except"))
 
-				for _, h := range v.Handlers {
-					s.indent.Printf("case %v:", s.strExpr(h.ExprType))
-					if h.Name != "" {
-						fmt.Printf(" // as %v", h.Name)
+					for _, h := range v.Handlers {
+						ch := jen.Case(s.goExpr(h.ExprType))
+						if h.Name != "" {
+							ch.Block(jen.Commentf("as %v", h.Name), s.parseBody("", h.Body))
+						} else {
+							ch.Block(s.parseBody("", h.Body))
+						}
+
+						g.Add(ch)
 					}
-					fmt.Println()
-					s.printBody(h.Body, false)
-				}
-
-				s.indent.Println("}")
-				s.Decr()
+				})
 			}
 
+			stmt.Block(body)
+
 			if len(v.Orelse) > 0 {
-				s.indent.Println("} else {")
-				s.printBody(v.Orelse, false)
+				stmt.Else().Block(s.parseBody("", v.Orelse))
 			}
 
 			if len(v.Finalbody) > 0 {
-				s.indent.Println("}; { // finally")
-				s.printBody(v.Finalbody, false)
+				stmt.Line().Block(jen.Comment("finally"), s.parseBody("", v.Finalbody))
 			}
-			s.indent.Println("}")
+			add(stmt)
 
 		case *ast.Raise:
-			s.indent.Printf("return RaisedException(%v) // raise", s.strExpr(v.Exc))
+			stmt := jen.Return(jen.Id("RaisedException").Call(s.goExpr(v.Exc)))
 			if v.Cause != nil {
-				fmt.Printf(" cause: %v", s.strExpr(v.Cause))
+				stmt.Commentf("cause: %v", s.goExpr(v.Cause).GoString())
 			}
-			fmt.Println()
+			add(stmt)
 
 		case *ast.Assert:
 			if v.Msg != nil {
-				s.indent.Printf("Assert(%v, %v)\n", s.strExpr(v.Test), s.strExpr(v.Msg))
+				add(jen.Id("Assert").Call(s.goExpr(v.Test), s.goExpr(v.Msg)))
 			} else {
-				s.indent.Printf("Assert(%v, %q)\n", s.strExpr(v.Test), s.strExpr(v.Test))
+				add(jen.Id("Assert").Call(s.goExpr(v.Test), jen.Lit("")))
 			}
 
 		case *ast.Global:
-			s.indent.Println("// global", s.strIdentifiers(v.Names))
+			add(jen.Commentf("global %v", s.goIdentifiers(v.Names).GoString()))
 
 		case *ast.Delete:
 			for _, t := range v.Targets {
 				st := t.(*ast.Subscript)
 				if i, ok := st.Slice.(*ast.Index); ok {
-					s.indent.Printf("delete(%v, %v)\n", s.strExpr(st.Value), s.strExpr(i.Value))
-					continue
+					add(jen.Delete(s.goExpr(st.Value), s.goExpr(i.Value)))
+				} else {
+					add(jen.Comment(unknown("DELETE", st).GoString()))
 				}
-
-				s.indent.Printf("delete %v // %#v\n", s.strExpr(st), st)
 			}
-
 		default:
-			s.indent.Println(unknown("STMT", stmt))
+			add(jen.Comment(unknown("STMT", stmt).GoString()))
 		}
 	}
-}
 
-func (s *Scope) printPrologue() {
-	pname := "converted"
-	if mainpackage {
-		pname = "main"
-	}
-
-	fmt.Printf(`// converted by gopyr
-package %s
-
-import "fmt"
-import . "github.com/raff/gopyr/runtime"
-
-`, pname)
+	return parsed, stmts
 }
 
 func main() {
@@ -904,7 +882,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	var scope Scope
+	pname := "converted"
+	if mainpackage {
+		pname = "main"
+	}
 
 	for _, path := range flag.Args() {
 		in, err := os.Open(path)
@@ -927,8 +908,28 @@ func main() {
 			log.Fatal("expected Module, got", tree)
 		}
 
-		// where do I get the module name ?
-		scope.printPrologue()
-		scope.printBody(m.Body, true)
+		scope := NewScope()
+
+		parsed, stmts := scope.parseBodyList("", m.Body)
+
+		f := jen.NewFile(pname)
+		f.PackageComment("generated by gopyr")
+		f.Add(parsed)
+
+		if false {
+			f.Render(os.Stdout)
+		} else {
+			f.Render(ioutil.Discard)
+			fmt.Println("// generated by gopyr")
+			fmt.Println("package", pname)
+			fmt.Println()
+			f.RenderImports(os.Stdout)
+
+			stmts = append(stmts, jen.Line())
+
+			for _, s := range stmts {
+				s.Render(os.Stdout)
+			}
+		}
 	}
 }
