@@ -38,10 +38,10 @@ var (
 		"Tuple": "TupleΠ",
 	}
 
-	goList  = jen.Qual("github.com/raff/gopyr/runtime", "List")
-	goTuple = jen.Qual("github.com/raff/gopyr/runtime", "Tuple")
-	goDict  = jen.Qual("github.com/raff/gopyr/runtime", "Dict")
-        goException = jen.Qual("github.com/raff/gopyr/runtime", "PyException")
+	goList      = jen.Qual("github.com/raff/gopyr/runtime", "List")
+	goTuple     = jen.Qual("github.com/raff/gopyr/runtime", "Tuple")
+	goDict      = jen.Qual("github.com/raff/gopyr/runtime", "Dict")
+	goException = jen.Qual("github.com/raff/gopyr/runtime", "PyException")
 )
 
 func rename(s string) string {
@@ -240,22 +240,24 @@ func isNone(expr ast.Expr) bool {
 	return false
 }
 
-func (s *Scope) gomprehension(c ast.Comprehension) *jen.Statement {
+func (s *Scope) gomprehension(c ast.Comprehension) (*jen.Statement, *jen.Statement) {
 	target := s.goExprOrList(c.Target)
 	if _, ok := c.Target.(*ast.Tuple); !ok { // single value
 		target = jen.List(jen.Op("_"), s.goExpr(c.Target))
 	}
-	stmt := jen.For(target.Op(":=").Range().Add(s.goExpr(c.Iter)))
+	iter := jen.For(target.Op(":=").Range().Add(s.goExpr(c.Iter)))
+	cond := iter
 	if len(c.Ifs) > 0 {
-		cond := s.goExpr(c.Ifs[0])
+		ccond := s.goExpr(c.Ifs[0])
 		for _, c := range c.Ifs[1:] {
-			cond.Add(jen.Op("&&"))
-			cond.Add(s.goExpr(c))
+			ccond.Add(jen.Op("&&"))
+			ccond.Add(s.goExpr(c))
 		}
-		stmt = stmt.Block(jen.If(cond))
+		cond = jen.If(ccond)
+		iter.Block(cond)
 	}
 
-	return stmt
+	return iter, cond
 }
 
 func (s *Scope) goExpr(expr interface{}) *jen.Statement {
@@ -386,33 +388,39 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 				Block(jen.Return(s.goExpr(v.Orelse)))).Call()
 
 	case *ast.ListComp:
-		body := s.gomprehension(v.Generators[0])
+		outer, inner := s.gomprehension(v.Generators[0])
 		for _, g := range v.Generators[1:] {
-			body.Add(jen.Block(s.gomprehension(g)))
+			outer1, inner1 := s.gomprehension(g)
+			inner.Add(jen.Block(outer1))
+			inner = inner1
 		}
-		body.Add(jen.Block(jen.Id("lc").Op("=").Append(jen.Id("lc"), s.goExpr(v.Elt))))
-		return jen.Func().Params().Params(jen.Id("lc").Add(goList)).Block(body, jen.Return(jen.Id("lc"))).Call()
+		inner.Add(jen.Block(jen.Id("lc").Op("=").Append(jen.Id("lc"), s.goExpr(v.Elt))))
+		return jen.Func().Params().Params(jen.Id("lc").Add(goList)).Block(outer, jen.Return(jen.Id("lc"))).Call()
 
 	case *ast.DictComp:
-		body := s.gomprehension(v.Generators[0])
+		outer, inner := s.gomprehension(v.Generators[0])
 		for _, g := range v.Generators[1:] {
-			body.Add(jen.Block(s.gomprehension(g)))
+			outer1, inner1 := s.gomprehension(g)
+			inner.Add(jen.Block(outer1))
+			inner = inner1
 		}
-		body.Add(jen.Block(jen.Id("mm").Index(s.goExpr(v.Key)).Op("=").Add(s.goExpr(v.Value))))
+		inner.Add(jen.Block(jen.Id("mm").Index(s.goExpr(v.Key)).Op("=").Add(s.goExpr(v.Value))))
 		return jen.Func().Params().Params(jen.Id("mm").Add(goDict)).Block(
 			jen.Id("mm").Op("=").Add(goDict).Values(),
-			body,
+			outer,
 			jen.Return()).Call()
 
 	case *ast.GeneratorExp:
-		body := s.gomprehension(v.Generators[0])
+		outer, inner := s.gomprehension(v.Generators[0])
 		for _, g := range v.Generators[1:] {
-			body.Add(jen.Block(s.gomprehension(g)))
+			outer1, inner1 := s.gomprehension(g)
+			inner.Add(jen.Block(outer1))
+			inner = inner1
 		}
-		body.Add(jen.Id("c").Op("<-")).Add(s.goExpr(v.Elt))
+		inner.Add(jen.Block(jen.Id("c").Op("<-").Add(s.goExpr(v.Elt))))
 		return jen.Func().Params().Params(jen.Id("c").Chan().Id("Any")).Block(
 			jen.Id("c").Op("=").Make(jen.Chan().Id("Any")),
-			jen.Go().Func().Params().Block(body, jen.Close(jen.Id("c"))).Call(),
+			jen.Go().Func().Params().Block(outer, jen.Close(jen.Id("c"))).Call(),
 			jen.Return(),
 		).Call()
 	}
