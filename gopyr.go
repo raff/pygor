@@ -42,6 +42,7 @@ var (
 	goTuple     = jen.Qual("github.com/raff/gopyr/runtime", "Tuple")
 	goDict      = jen.Qual("github.com/raff/gopyr/runtime", "Dict")
 	goException = jen.Qual("github.com/raff/gopyr/runtime", "PyException")
+	goContains  = jen.Qual("github.com/raff/gopyr/runtime", "Contains")
 )
 
 func rename(s string) string {
@@ -358,16 +359,28 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 		return s.goExpr(v.Left).Add(s.goOp(v.Op)).Add(s.goExpr(v.Right))
 
 	case *ast.Compare:
-		stmt := s.goExpr(v.Left)
-		var prev *jen.Statement
+		stmt := jen.Null()
+
+		left := s.goExpr(v.Left)
+		right := (*jen.Statement)(nil)
+
 		for i, op := range v.Ops {
-			if prev != nil {
-				stmt.Op("&&").Add(prev)
+			if right != nil {
+				stmt.Op("&&")
+				left = right.Clone()
 			}
-			stmt.Add(s.goCmpOp(op))
-			prev = s.goExpr(v.Comparators[i])
-			stmt.Add(prev)
+
+			right = s.goExpr(v.Comparators[i])
+
+			if op == ast.In || op == ast.NotIn {
+				stmt.Add(goContains.Clone().Call(right, left))
+			} else {
+				stmt.Add(left)
+				stmt.Add(s.goCmpOp(op))
+				stmt.Add(right)
+			}
 		}
+
 		return stmt
 
 	case *ast.Name:
