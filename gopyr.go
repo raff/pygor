@@ -130,7 +130,6 @@ func (s *Scope) newNames(lexpr []ast.Expr) (ret bool) {
 }
 
 func (s *Scope) addName(id ast.Identifier) {
-	log.Println("add name", id)
 	s.vars[string(id)] = struct{}{}
 }
 
@@ -696,7 +695,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 	add := func(s *jen.Statement) {
 		if verbose {
-			log.Println("GGG", s.GoString())
+			fmt.Println("GGG", s) //.GoString())
 		}
 
 		parsed.Add(s)
@@ -814,6 +813,9 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 		case *ast.Pass:
 			add(jen.Comment("pass"))
+
+		case *ast.Break:
+			add(jen.Break())
 
 		case *ast.Return:
 			if v.Value == nil {
