@@ -68,21 +68,70 @@ func unknown(typ string, v interface{}) *jen.Statement {
 }
 
 type Scope struct {
-	level int // nesting level
-	vars  map[string]struct{}
+	level   int // nesting level
+	vars    map[string]struct{}
+	imports map[string]string
+
+	next *Scope
+	prev *Scope
 }
 
 func NewScope() *Scope {
-	return &Scope{vars: make(map[string]struct{})}
+	return &Scope{vars: make(map[string]struct{}), imports: make(map[string]string)}
 }
 
-func (s *Scope) newVar(v string) bool {
-	if _, ok := s.vars[v]; ok {
-		return true
+func (s *Scope) Push() *Scope {
+	next := NewScope()
+	s.next = next
+	next.level = s.level + 1
+	next.prev = s
+	return next
+}
+
+func (s *Scope) Pop() *Scope {
+	prev := s.prev
+	prev.next = nil
+	return prev
+}
+
+// check if the element in the expression list are new names
+// (and add them to the list of known names)
+func (s *Scope) newNames(lexpr []ast.Expr) (ret bool) {
+	for _, x := range lexpr {
+		var nn string
+
+		switch t := x.(type) {
+		case *ast.Name:
+			nn = string(t.Id)
+
+		default:
+			continue
+		}
+
+		// if we have seen the name before, in any scope,
+		// it's defined. Otherwise "define" it in the current scope.
+		// (but if forceNew is set, these are new names in the scope)
+		found := false
+
+		for curr := s; curr != nil; curr = curr.prev {
+			if _, ok := curr.vars[nn]; ok {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			s.vars[nn] = struct{}{}
+			ret = true
+		}
 	}
 
-	s.vars[v] = struct{}{}
-	return false
+	return
+}
+
+func (s *Scope) addName(id ast.Identifier) {
+	log.Println("add name", id)
+	s.vars[string(id)] = struct{}{}
 }
 
 func (s *Scope) goBoolOp(op ast.BoolOpNumber) *jen.Statement {
@@ -185,7 +234,7 @@ func (s *Scope) goSlice(name ast.Expr, value ast.Slicer) *jen.Statement {
 			start = s.goExpr(sl.Lower)
 		}
 		if sl.Upper != nil {
-			end = s.goExpr(sl.Lower)
+			end = s.goExpr(sl.Upper)
 		}
 		if sl.Step != nil {
 			panic("step index not implemented")
@@ -487,6 +536,8 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 	}
 
 	for _, arg := range aargs {
+		s.addName(arg.Arg)
+
 		p := goId(arg.Arg)
 		if arg.Annotation != nil {
 			p.Add(s.goExpr(arg.Annotation))
@@ -498,6 +549,8 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 	}
 
 	for i, arg := range args.Kwonlyargs {
+		s.addName(arg.Arg)
+
 		p := goId(arg.Arg)
 		if arg.Annotation != nil {
 			p.Add(s.goExpr(arg.Annotation))
@@ -510,6 +563,8 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 	}
 
 	if args.Vararg != nil {
+		s.addName(args.Vararg.Arg)
+
 		p := goId(args.Vararg.Arg).Op("...")
 		if args.Vararg.Annotation != nil {
 			p.Add(s.goExpr(args.Vararg.Annotation))
@@ -521,6 +576,8 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 	}
 
 	if args.Kwarg != nil {
+		s.addName(args.Kwarg.Arg)
+
 		p := goId(args.Kwarg.Arg).Op("...")
 		if args.Vararg.Annotation != nil {
 			p.Add(s.goExpr(args.Kwarg.Annotation))
@@ -632,6 +689,8 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 }
 
 func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement, []*jen.Statement) {
+	s.level += 1
+
 	parsed := jen.Null()
 	stmts := []*jen.Statement{}
 
@@ -678,7 +737,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 		case *ast.FunctionDef:
 			for _, d := range v.DecoratorList {
-				add(jen.Commentf("// @%v\n", s.goExpr(d).GoString()))
+				add(jen.Commentf("@%v\n", s.goExpr(d).GoString()))
 			}
 
 			var receiver jen.Code
@@ -696,17 +755,19 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			if receiver != nil {
 				stmt.Add(receiver)
 			}
-			stmt.Add(s.goExpr(v.Name))
-			stmt.Params(s.goFunctionArguments(v.Args, receiver != nil))
+			fs := s.Push()
+			stmt.Add(fs.goExpr(v.Name))
+			stmt.Params(fs.goFunctionArguments(v.Args, receiver != nil))
 			if returns != nil {
 				stmt.Add(returns)
 			}
-			stmt.Block(s.parseBody("", v.Body))
+			stmt.Block(fs.parseBody("", v.Body))
+			fs.Pop()
 			add(stmt)
 
 		case *ast.ClassDef:
 			for _, d := range v.DecoratorList {
-				add(jen.Commentf("// @%v\n", s.goExpr(d).GoString()))
+				add(jen.Commentf("@%v\n", s.goExpr(d).GoString()))
 			}
 
 			classdef := jen.Type().Add(goId(v.Name)).StructFunc(func(g *jen.Group) {
@@ -722,7 +783,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 					}
 				}
 
-				g.Add(jen.Commentf("//%v", cdefs))
+				g.Add(jen.Commentf("%v", cdefs))
 			})
 
 			add(classdef.Line())
@@ -739,7 +800,11 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			add(s.parseBody(string(v.Name), v.Body))
 
 		case *ast.Assign:
-			add(s.goExpr(v.Targets).Op("=").Add(s.goExpr(v.Value)))
+			stmt := s.goExpr(v.Targets).Op("=").Add(s.goExpr(v.Value))
+			if s.newNames(v.Targets) {
+				stmt = jen.Var().Add(stmt)
+			}
+			add(stmt)
 
 		case *ast.AugAssign:
 			add(s.goExpr(v.Target).Add(s.goOpExt(v.Op, "=")).Add(s.goExpr(v.Value)))
@@ -893,6 +958,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 		}
 	}
 
+	s.level -= 1
 	return parsed, stmts
 }
 
