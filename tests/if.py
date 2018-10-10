@@ -27,3 +27,16 @@ elif False:
 else:
     print("I don't know")
     print("whatever")
+
+
+if 1:
+    print("uno")
+elif 2:
+    print("due")
+elif 3:
+    if "a":
+        print("alabama")
+    else:
+        print("zanzibar")
+else:
+    print("quarantaquattro")

@@ -309,6 +309,21 @@ func (s *Scope) gomprehension(c ast.Comprehension) (*jen.Statement, *jen.Stateme
 	return iter, cond
 }
 
+// print k=v either for function definitions (def=true) or for function call (def=false)
+func (s *Scope) goKvals(kk []*ast.Keyword, def bool) *jen.Statement {
+	return jen.ListFunc(func(g *jen.Group) {
+		if def {
+			for _, k := range kk {
+				g.Add(goId(k.Arg).Commentf("/*=%v*/", s.goExpr(k.Value).GoString()))
+			}
+		} else {
+			for _, k := range kk {
+				g.Commentf("/*%v=*/", string(k.Arg)).Add(s.goExpr(k.Value))
+			}
+		}
+	})
+}
+
 func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 	if verbose {
 		fmt.Printf("XXX %T %#v\n\n", expr, expr)
@@ -321,8 +336,7 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 	case []*ast.Keyword:
 		return jen.ListFunc(func(g *jen.Group) {
 			for _, k := range v {
-				g.Add(goId(k.Arg))
-				g.Add(jen.Commentf("/*=%v*/", s.goExpr(k.Value).GoString()))
+				g.Add(goId(k.Arg).Commentf("/*=%v*/", s.goExpr(k.Value).GoString()))
 			}
 		})
 
@@ -557,7 +571,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 			p.Add(jen.Id("Any"))
 		}
 
-		p.Add(jen.Commentf("/*=%v*/", s.goExpr(args.KwDefaults[i]).GoString()))
+		p.Commentf("/*=%v*/", s.goExpr(args.KwDefaults[i]).GoString())
 		params = append(params, p)
 	}
 
@@ -668,7 +682,7 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 	}
 
 	if len(call.Keywords) > 0 {
-		args = append(args, s.goExpr(call.Keywords))
+		args = append(args, s.goKvals(call.Keywords, false))
 	}
 
 	if call.Starargs != nil {
@@ -695,7 +709,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 	add := func(s *jen.Statement) {
 		if verbose {
-			fmt.Println("GGG", s) //.GoString())
+			fmt.Println("GGG", s.GoString())
 		}
 
 		parsed.Add(s)
@@ -743,7 +757,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			var returns jen.Code
 
 			if classname != "" {
-				receiver = jen.Params(jen.Id("self").Id(classname))
+				receiver = jen.Params(jen.Id("self").Op("*").Id(classname))
 			}
 
 			if v.Returns != nil && !isNone(v.Returns) {
@@ -835,7 +849,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 					continue
 				}
 
-				stmt.Add(s.parseBody("", v.Orelse[i:]))
+				stmt.Block(s.parseBody("", v.Orelse[i:]))
 				break
 			}
 			add(stmt)
@@ -955,6 +969,24 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 					add(jen.Comment(unknown("DELETE", st).GoString()))
 				}
 			}
+
+		case *ast.With:
+			// We should really create an anonymous function
+			// with a defer (that we can't really fill, but in a few cases)
+			add(jen.BlockFunc(func(g *jen.Group) {
+				g.Comment("with")
+
+				for _, item := range v.Items {
+					if item.OptionalVars != nil {
+						g.Add(s.goExpr(item.OptionalVars).Op(":=").Add(s.goExpr(item.ContextExpr)))
+					} else {
+						g.Add(s.goExpr(item.ContextExpr))
+					}
+				}
+
+				g.Line().Add(s.parseBody("", v.Body))
+			}))
+
 		default:
 			add(jen.Comment(unknown("STMT", stmt).GoString()))
 		}
