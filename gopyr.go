@@ -81,7 +81,7 @@ func NewScope() *Scope {
 }
 
 func (s *Scope) Push() *Scope {
-	next := NewScope()
+	next := &Scope{vars: make(map[string]struct{}), imports: s.imports}
 	s.next = next
 	next.level = s.level + 1
 	next.prev = s
@@ -451,6 +451,9 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 		return goId(v.Id)
 
 	case *ast.Attribute:
+		if n, ok := v.Value.(*ast.Name); ok && s.imports[string(n.Id)] != "" {
+			return jen.Qual(s.imports[string(n.Id)], string(v.Attr))
+		}
 		return s.goExpr(v.Value).Dot(string(v.Attr))
 
 	case *ast.Subscript:
@@ -672,6 +675,27 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 			if len(call.Args) == 0 {
 				return jen.Qual("strings", "TrimSpace").Call(s.goExpr(ff.Value))
 			}
+
+		case "split":
+			if len(call.Args) == 1 {
+				return jen.Qual("strings", "Split").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
+			}
+
+		case "join":
+			if len(call.Args) == 1 {
+				return jen.Qual("strings", "Join").Call(s.goExpr(call.Args[0]), s.goExpr(ff.Value))
+			}
+		}
+
+		if name, ok := ff.Value.(*ast.Name); ok {
+			switch {
+			case string(name.Id) == "sys" && string(ff.Attr) == "exit":
+				ret := jen.Lit(-1)
+				if len(call.Args) > 0 {
+					ret = s.goExpr(call.Args[0])
+				}
+				return jen.Qual("os", "Exit").Call(ret)
+			}
 		}
 	}
 
@@ -731,11 +755,12 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 		switch v := stmt.(type) {
 		case *ast.ImportFrom:
+			s.imports[string(v.Module)] = string(v.Module)
 			for _, i := range v.Names {
 				if i.AsName != "" {
-					add(jen.Commentf("import %v \"%v.%v\"", i.AsName, v.Module, i.Name))
+					add(jen.Commentf("import %v %q // %v", i.AsName, v.Module, i.Name))
 				} else {
-					add(jen.Commentf("import \"%v.%v\"", v.Module, i.Name))
+					add(jen.Commentf("import %q // %v", v.Module, i.Name))
 				}
 			}
 
@@ -743,8 +768,10 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			for _, i := range v.Names {
 				if i.AsName != "" {
 					add(jen.Commentf("import %s %q", i.AsName, i.Name))
+					s.imports[string(i.AsName)] = string(i.Name)
 				} else {
 					add(jen.Commentf("import %q", i.Name))
+					s.imports[string(i.Name)] = string(i.Name)
 				}
 			}
 
@@ -881,9 +908,9 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 					t := s.goExpr(v.Target)
 
-					stmt = jen.For(t.Op(":=").Add(start),
-						t.Op("<").Add(stop),
-						t.Op("+=").Add(step))
+					stmt = jen.For(t.Clone().Op(":=").Add(start),
+						t.Clone().Op("<").Add(stop),
+						t.Clone().Op("+=").Add(step))
 				} else {
 					t := s.goExprOrList(v.Target)
 					stmt = jen.For(t.Op(":=").Range().Add(s.goExpr(v.Iter)))
@@ -899,7 +926,11 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			add(stmt)
 
 		case *ast.While:
-			stmt := jen.For(s.goExpr(v.Test)).Block(s.parseBody("", v.Body))
+			stmt := jen.For(s.goExpr(v.Test))
+			if k, ok := v.Test.(*ast.NameConstant); ok && k.Value == py.True {
+				stmt = jen.For()
+			}
+			stmt = stmt.Block(s.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
 				stmt.Else().Block(s.parseBody("", v.Orelse))
 			}
