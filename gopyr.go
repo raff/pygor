@@ -53,6 +53,10 @@ func rename(s string) string {
 	return s
 }
 
+func renameId(id ast.Identifier) string {
+	return rename(string(id))
+}
+
 func unknown(typ string, v interface{}) *jen.Statement {
 	msg := fmt.Sprintf("UNKNOWN-%v: %T %#v", typ, v, v)
 
@@ -290,11 +294,7 @@ func isNone(expr ast.Expr) bool {
 }
 
 func (s *Scope) gomprehension(c ast.Comprehension) (*jen.Statement, *jen.Statement) {
-	target := s.goExprOrList(c.Target)
-	if _, ok := c.Target.(*ast.Tuple); !ok { // single value
-		target = jen.List(jen.Op("_"), s.goExpr(c.Target))
-	}
-	iter := jen.For(target.Op(":=").Range().Add(s.goExpr(c.Iter)))
+	iter := s.goFor(c.Target, c.Iter)
 	cond := iter
 	if len(c.Ifs) > 0 {
 		ccond := s.goExpr(c.Ifs[0])
@@ -454,7 +454,7 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 		if n, ok := v.Value.(*ast.Name); ok && s.imports[string(n.Id)] != "" {
 			return jen.Qual(s.imports[string(n.Id)], string(v.Attr))
 		}
-		return s.goExpr(v.Value).Dot(string(v.Attr))
+		return s.goExpr(v.Value).Dot(renameId(v.Attr))
 
 	case *ast.Subscript:
 		return s.goSlice(v.Value, v.Slice)
@@ -581,7 +581,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 	if args.Vararg != nil {
 		s.addName(args.Vararg.Arg)
 
-		p := goId(args.Vararg.Arg).Op("...")
+		p := goId(args.Vararg.Arg).Comment("/*...*/")
 		if args.Vararg.Annotation != nil {
 			p.Add(s.goExpr(args.Vararg.Annotation))
 		} else {
@@ -594,7 +594,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 	if args.Kwarg != nil {
 		s.addName(args.Kwarg.Arg)
 
-		p := goId(args.Kwarg.Arg).Op("...")
+		p := goId(args.Kwarg.Arg).Comment("/*...*/")
 		if args.Vararg.Annotation != nil {
 			p.Add(s.goExpr(args.Kwarg.Annotation))
 		} else {
@@ -633,12 +633,19 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 			if len(call.Args) == 2 {
 				obj := s.goExpr(call.Args[0])
 				otype := s.goExpr(call.Args[1])
+				comment := jen.Commentf("isinstance(%v, %v)", obj.GoString(), otype.GoString())
+				if attr, ok := call.Args[1].(*ast.Attribute); ok {
+					otype = jen.Commentf("/*%v*/", s.goExpr(attr.Value).GoString()).Add(s.goExpr(attr.Attr))
+				}
 				return jen.Func().Params().Bool().Block(
-					jen.Commentf("isinstance(%v, %v)", obj.GoString(), otype.GoString()),
+					comment,
 					jen.List(jen.Op("_"), jen.Id("ok")).Op(":=").Add(obj).Assert(otype),
 					jen.Return(jen.Id("ok")),
 				).Call()
 			}
+
+		case "type":
+			cfunc = jen.Qual("reflect", "Type")
 		}
 
 	case *ast.Attribute:
@@ -710,14 +717,52 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 	}
 
 	if call.Starargs != nil {
-		args = append(args, s.goExpr(call.Starargs).Op("..."))
+		args = append(args, s.goExpr(call.Starargs).Comment("/*...*/"))
 	}
 
 	if call.Kwargs != nil {
-		args = append(args, s.goExpr(call.Kwargs).Op("..."))
+		args = append(args, s.goExpr(call.Kwargs).Comment("/*...*/"))
 	}
 
 	return cfunc.Call(args...)
+}
+
+func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
+	if c, ok := iter.(*ast.Call); ok { // check for "for x in range(n)"
+		if n, ok := c.Func.(*ast.Name); ok && string(n.Id) == "range" {
+			if len(c.Args) < 1 || len(c.Args) > 3 {
+				panic("range expects 1 to 3 arguments")
+			}
+
+			start := jen.Lit(0)
+			step := jen.Lit(1)
+
+			var stop jen.Code
+
+			if len(c.Args) == 1 {
+				stop = s.goExpr(c.Args[0])
+			} else {
+				start = s.goExpr(c.Args[0])
+				stop = s.goExpr(c.Args[1])
+
+				if len(c.Args) > 2 {
+					step = s.goExpr(c.Args[2])
+				}
+			}
+
+			t := s.goExpr(target)
+
+			return jen.For(t.Clone().Op(":=").Add(start),
+				t.Clone().Op("<").Add(stop),
+				t.Clone().Op("+=").Add(step))
+		}
+
+		t := s.goExprOrList(target)
+		return jen.For(t.Op(":=").Range().Add(s.goExpr(iter)))
+	}
+
+	// for x in iterable
+	return jen.For(s.goExpr(target).Op(":=").Range().Add(s.goExpr(iter)))
 }
 
 func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
@@ -793,10 +838,14 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 			stmt := jen.Func()
 			if receiver != nil {
-				stmt.Add(receiver)
+				stmt.Add(receiver).Add(s.goExpr(v.Name))
+			} else if s.level <= 1 {
+				stmt.Add(s.goExpr(v.Name))
+			} else {
+				stmt = s.goExpr(v.Name).Op(":=").Func()
 			}
+
 			fs := s.Push()
-			stmt.Add(fs.goExpr(v.Name))
 			stmt.Params(fs.goFunctionArguments(v.Args, receiver != nil))
 			if returns != nil {
 				stmt.Add(returns)
@@ -882,44 +931,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			add(stmt)
 
 		case *ast.For:
-			var stmt *jen.Statement
-
-			if c, ok := v.Iter.(*ast.Call); ok { // check for "for x in range(n)"
-				if n, ok := c.Func.(*ast.Name); ok && string(n.Id) == "range" {
-					if len(c.Args) < 1 || len(c.Args) > 3 {
-						panic("range expects 1 to 3 arguments")
-					}
-
-					start := jen.Lit(0)
-					step := jen.Lit(1)
-
-					var stop jen.Code
-
-					if len(c.Args) == 1 {
-						stop = s.goExpr(c.Args[0])
-					} else {
-						start = s.goExpr(c.Args[0])
-						stop = s.goExpr(c.Args[1])
-
-						if len(c.Args) > 2 {
-							step = s.goExpr(c.Args[2])
-						}
-					}
-
-					t := s.goExpr(v.Target)
-
-					stmt = jen.For(t.Clone().Op(":=").Add(start),
-						t.Clone().Op("<").Add(stop),
-						t.Clone().Op("+=").Add(step))
-				} else {
-					t := s.goExprOrList(v.Target)
-					stmt = jen.For(t.Op(":=").Range().Add(s.goExpr(v.Iter)))
-				}
-			} else { // for x in iterable
-				stmt = jen.For(s.goExpr(v.Target).Op(":=").Range().Add(s.goExpr(v.Iter)))
-			}
-
-			stmt.Block(s.parseBody("", v.Body))
+			stmt := s.goFor(v.Target, v.Iter).Block(s.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
 				stmt.Else().Block(s.parseBody("", v.Orelse))
 			}
@@ -993,11 +1005,14 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 
 		case *ast.Delete:
 			for _, t := range v.Targets {
-				st := t.(*ast.Subscript)
-				if i, ok := st.Slice.(*ast.Index); ok {
-					add(jen.Delete(s.goExpr(st.Value), s.goExpr(i.Value)))
+				if st, ok := t.(*ast.Subscript); ok {
+					if i, ok := st.Slice.(*ast.Index); ok {
+						add(jen.Delete(s.goExpr(st.Value), s.goExpr(i.Value)))
+					} else {
+						log.Panicf("unexpected DELETE %#v", st)
+					}
 				} else {
-					add(jen.Comment(unknown("DELETE", st).GoString()))
+					add(jen.Comment(unknown("DELETE", t).GoString()))
 				}
 			}
 
