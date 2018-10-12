@@ -25,11 +25,12 @@ var (
 		"func": "funcΠ",
 
 		// Convert python names to gopyr names
-		"str":   "string",
-		"float": "float64",
-		"dict":  "Dict",
-		"list":  "List",
-		"tuple": "Tuple",
+		"str":     "string",
+		"float":   "float64",
+		"complex": "complex128",
+		"dict":    "Dict",
+		"list":    "List",
+		"tuple":   "Tuple",
 
 		// these are not go keywords but they are used by gopyr
 		"Any":   "AnyΠ",
@@ -776,16 +777,22 @@ func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 	return jen.For(s.goExpr(target).Op(":=").Range().Add(s.goExpr(iter)))
 }
 
+// parse a block/list of statements
 func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
-	p, _ := s.parseBodyList(classname, body)
+	p, _, _ := s.parseBodyEx(classname, body)
 	return p
 }
 
-func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement, []*jen.Statement) {
+// parse a block/list of statements anre returns
+// - the block, as single statement
+// - the list of statements (useful only in the main module)
+// - the type of return (in a function body, true: yield, false: return)
+func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, []*jen.Statement, bool) {
 	s.level += 1
 
 	parsed := jen.Null()
 	stmts := []*jen.Statement{}
+	generator := false
 
 	add := func(s *jen.Statement) {
 		if verbose {
@@ -832,30 +839,40 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			}
 
 		case *ast.FunctionDef:
+			var receiver jen.Code
+			var returns jen.Code
+
 			for _, d := range v.DecoratorList {
 				add(jen.Commentf("@%v\n", s.goExpr(d).GoString()))
 			}
 
-			var receiver jen.Code
-
 			fs := s.Push()
+
 			arguments, recv := fs.goFunctionArguments(v.Args, classname != "")
 			if recv != nil {
 				receiver = jen.Params(goId(recv.Arg).Op("*").Id(classname))
 			}
+			if v.Returns != nil && !isNone(v.Returns) {
+				returns = jen.Params(fs.goExprOrList(v.Returns))
+			}
 
 			stmt := jen.Func()
 			if receiver != nil {
-				stmt.Add(receiver).Add(s.goExpr(v.Name))
+				if string(v.Name) == "__str__" {
+					stmt.Add(receiver).Id("String")
+					returns = jen.Params(jen.Id("string"))
+				} else {
+					stmt.Add(receiver).Add(goId(v.Name))
+				}
 			} else if s.level <= 1 {
-				stmt.Add(s.goExpr(v.Name))
+				stmt.Add(goId(v.Name))
 			} else {
-				stmt = s.goExpr(v.Name).Op(":=").Func()
+				stmt = goId(v.Name).Op(":=").Func()
 			}
 
 			stmt.Params(arguments)
-			if v.Returns != nil && !isNone(v.Returns) {
-				stmt.Add(jen.Params(fs.goExprOrList(v.Returns)))
+			if returns != nil {
+				stmt.Add(returns)
 			}
 			stmt.Block(fs.parseBody("", v.Body))
 			fs.Pop()
@@ -906,13 +923,37 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			add(s.goExpr(v.Target).Add(s.goOpExt(v.Op, "=")).Add(s.goExpr(v.Value)))
 
 		case *ast.ExprStmt:
-			add(s.goExpr(v.Value)) //.Line()
+			switch xStmt := v.Value.(type) {
+			case *ast.Yield:
+				generator = true
+				ret := jen.Null()
+				if xStmt.Value != nil {
+					ret = s.goExprOrList(xStmt.Value)
+				}
+				//add(jen.Commentf("yield %s", ret.GoString()))
+				add(jen.Return(ret).Comment("yield"))
+
+			case *ast.YieldFrom:
+				generator = true
+				ret := jen.Null()
+				if xStmt.Value != nil {
+					ret = s.goExprOrList(xStmt.Value)
+				}
+				//add(jen.Commentf("yield from %s", ret.GoString()))
+				add(jen.Return(ret).Comment("yield from"))
+
+			default:
+				add(s.goExpr(v.Value)) //.Line()
+			}
 
 		case *ast.Pass:
 			add(jen.Comment("pass"))
 
 		case *ast.Break:
 			add(jen.Break())
+
+		case *ast.Continue:
+			add(jen.Continue())
 
 		case *ast.Return:
 			if v.Value == nil {
@@ -1010,6 +1051,9 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 		case *ast.Global:
 			add(jen.Commentf("global %v", s.goIdentifiers(v.Names).GoString()))
 
+		case *ast.Nonlocal:
+			add(jen.Commentf("nonlocal %v", s.goIdentifiers(v.Names).GoString()))
+
 		case *ast.Delete:
 			for _, t := range v.Targets {
 				if st, ok := t.(*ast.Subscript); ok {
@@ -1046,7 +1090,7 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 	}
 
 	s.level -= 1
-	return parsed, stmts
+	return parsed, stmts, generator
 }
 
 func main() {
@@ -1063,11 +1107,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	pname := "converted"
-	if mainpackage {
-		pname = "main"
-	}
-
 	for _, path := range flag.Args() {
 		in, err := os.Open(path)
 		if err != nil {
@@ -1077,6 +1116,16 @@ func main() {
 		defer in.Close()
 		if debugLevel > 0 {
 			fmt.Printf(path, "-----------------\n")
+		}
+
+		fi, err := in.Stat()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		pname := strings.TrimSuffix(fi.Name(), ".py")
+		if mainpackage {
+			pname = "main"
 		}
 
 		tree, err := parser.Parse(in, path, "exec")
@@ -1091,7 +1140,7 @@ func main() {
 
 		scope := NewScope()
 
-		parsed, stmts := scope.parseBodyList("", m.Body)
+		parsed, stmts, _ := scope.parseBodyEx("", m.Body)
 
 		f := jen.NewFile(pname)
 		f.PackageComment("generated by gopyr")
