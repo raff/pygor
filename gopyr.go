@@ -963,18 +963,13 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			}
 
 		case *ast.If:
-			stmt := jen.If(s.goExpr(v.Test))
-			stmt.Block(s.parseBody("", v.Body))
-
-			for i, e := range v.Orelse {
-				stmt.Add(jen.Else())
-				if _, ok := e.(*ast.If); ok {
-					stmt.Add(s.parseBody("", []ast.Stmt{e}))
-					continue
+			stmt := jen.If(s.goExpr(v.Test)).Block(s.parseBody("", v.Body))
+			if len(v.Orelse) > 0 {
+				if _, ok := v.Orelse[0].(*ast.If); ok && len(v.Orelse) == 1 {
+					stmt.Else().Add(s.parseBody("", v.Orelse))
+				} else {
+					stmt.Else().Block(s.parseBody("", v.Orelse))
 				}
-
-				stmt.Block(s.parseBody("", v.Orelse[i:]))
-				break
 			}
 			add(stmt)
 

@@ -38,5 +38,11 @@ elif 3:
         print("alabama")
     else:
         print("zanzibar")
+
+    a = 1
+    b= 2
 else:
     print("quarantaquattro")
+
+if True:
+    print("yes")
