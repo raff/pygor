@@ -463,7 +463,8 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 		return s.goCall(v)
 
 	case *ast.Lambda:
-		return jen.Func().Params(s.goFunctionArguments(v.Args, false)).Block(s.goExpr(v.Body)).Call()
+		args, _ := s.goFunctionArguments(v.Args, false)
+		return jen.Func().Params(args).Block(s.goExpr(v.Body)).Call()
 
 	case *ast.IfExp:
 		return jen.Func().Params().Block(
@@ -539,16 +540,18 @@ func goId(id ast.Identifier) *jen.Statement {
 	return jen.Id(rename(s))
 }
 
-func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen.Statement {
+func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) (*jen.Statement, *ast.Arg) {
+	var recv *ast.Arg
+
 	if args == nil {
-		return jen.Null()
+		return jen.Null(), recv
 	}
 
 	var params []jen.Code
 
 	aargs := args.Args
 	if skipReceiver && len(aargs) > 0 {
-		aargs = aargs[1:]
+		recv, aargs = aargs[0], aargs[1:]
 	}
 
 	for _, arg := range aargs {
@@ -606,7 +609,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) *jen
 
 	// XXX: what is arg.Defaults ?
 
-	return jen.List(params...)
+	return jen.List(params...), recv
 }
 
 func (s *Scope) goCallParams(params ...ast.Expr) *jen.Statement {
@@ -702,6 +705,14 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 					ret = s.goExpr(call.Args[0])
 				}
 				return jen.Qual("os", "Exit").Call(ret)
+
+			case string(name.Id) == "time" && string(ff.Attr) == "sleep" && len(call.Args) == 1:
+				tt := jen.Qual("time", "Duration").Parens(
+					s.goExpr(call.Args[0]).Op("*").Float64().Parens(jen.Qual("time", "Second")))
+				return jen.Qual("time", "Sleep").Call(tt)
+
+			case string(name.Id) == "time" && string(ff.Attr) == "time" && len(call.Args) == 0:
+				return jen.Qual("time", "Now").Call()
 			}
 		}
 	}
@@ -826,14 +837,11 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 			}
 
 			var receiver jen.Code
-			var returns jen.Code
 
-			if classname != "" {
-				receiver = jen.Params(jen.Id("self").Op("*").Id(classname))
-			}
-
-			if v.Returns != nil && !isNone(v.Returns) {
-				returns = jen.Params(s.goExprOrList(v.Returns))
+			fs := s.Push()
+			arguments, recv := fs.goFunctionArguments(v.Args, classname != "")
+			if recv != nil {
+				receiver = jen.Params(goId(recv.Arg).Op("*").Id(classname))
 			}
 
 			stmt := jen.Func()
@@ -845,10 +853,9 @@ func (s *Scope) parseBodyList(classname string, body []ast.Stmt) (*jen.Statement
 				stmt = s.goExpr(v.Name).Op(":=").Func()
 			}
 
-			fs := s.Push()
-			stmt.Params(fs.goFunctionArguments(v.Args, receiver != nil))
-			if returns != nil {
-				stmt.Add(returns)
+			stmt.Params(arguments)
+			if v.Returns != nil && !isNone(v.Returns) {
+				stmt.Add(jen.Params(fs.goExprOrList(v.Returns)))
 			}
 			stmt.Block(fs.parseBody("", v.Body))
 			fs.Pop()
