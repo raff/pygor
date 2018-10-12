@@ -843,7 +843,7 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			var returns jen.Code
 
 			for _, d := range v.DecoratorList {
-				add(jen.Commentf("@%v\n", s.goExpr(d).GoString()))
+				add(jen.Commentf("// @%v\n", s.goExpr(d).GoString()))
 			}
 
 			fs := s.Push()
@@ -914,7 +914,9 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 
 		case *ast.Assign:
 			stmt := s.goExpr(v.Targets).Op("=").Add(s.goExpr(v.Value))
-			if s.newNames(v.Targets) {
+			if classname != "" {
+				stmt = jen.Var().Commentf("/*%v*/", classname).Add(stmt)
+			} else if s.newNames(v.Targets) {
 				stmt = jen.Var().Add(stmt)
 			}
 			add(stmt)
