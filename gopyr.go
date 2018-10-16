@@ -901,6 +901,23 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 
 			add(classdef.Line())
 
+			/***********************************
+			  Here we should be expecting only:
+
+			  - pass (and nothing else)
+			  - string: should be a __doc__ string
+			  - assignments (class variable)
+			  - function definition (class methods)
+
+			  Anything else should be an error.
+
+			  So, we could convert:
+			  - pass: empty struct (done)
+			  - string: add comment to struct body
+			  - assignements: struct fields (with value in comment)
+			  - class methods: parse body and add to most outer scope
+			  ***********************************/
+
 			switch len(v.Body) {
 			case 0:
 				continue
@@ -910,6 +927,28 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 					continue
 				}
 			}
+
+			/*
+			   for _, pst := range v.Body {
+			           switch v := pst.(type) {
+			           case *ast.ExprStmt:  // error if not string
+			               if str, ok := expr.Value.(*ast.Str); ok {
+			               } else {
+			                   // error
+			               }
+
+			           case *ast.Assign:
+			               //
+
+			           case *ast.FunctionDef:
+			               //
+
+			           default:
+			               // error
+			           }
+			   }
+			*/
+
 			add(s.parseBody(string(v.Name), v.Body))
 
 		case *ast.Assign:
