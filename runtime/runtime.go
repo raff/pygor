@@ -22,14 +22,7 @@ func Contains(bag, value interface{}) bool {
 			return ok
 		}
 
-	case List:
-		for _, v := range c {
-			if v == value {
-				return true
-			}
-		}
-
-	case Tuple:
+	case List: // or Tuple
 		for _, v := range c {
 			if v == value {
 				return true
