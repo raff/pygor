@@ -5,15 +5,15 @@ A Python 3 to Go transpiler, with many things to be desired.
 
 ## installation
 
-    go get -v -u github.com/raff/gopyr
+    go get -v -u github.com/raff/pygor
     
 ## usage
 
-    go run gopyr.go python_code.py
+    go run pygor.go python_code.py
     
 ## tests
 
     for f in tests/*.py
     do
-      go run gopyr.go $f
+      go run pygor.go $f
     done
