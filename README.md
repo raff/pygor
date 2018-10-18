@@ -1,6 +1,9 @@
 # pygor
 Python to Go Regurgitator
 
+    Dr. Frederick Frankenstein: You must be Igor. [he pronounces it ee-gor.]
+    Igor: No, it's pronounced "eye-gor."
+
 A Python 3 to Go transpiler, with many things to be desired.
 
 ## installation
