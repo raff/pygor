@@ -1070,28 +1070,33 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			s.Add(stmt)
 
 		case *ast.For:
-			stmt := s.goFor(v.Target, v.Iter).Block(s.parseBody("", v.Body))
+			ss := s.Push()
+			stmt := ss.goFor(v.Target, v.Iter).Block(ss.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
-				stmt.Else().Block(s.parseBody("", v.Orelse))
+				stmt.Else().Block(ss.parseBody("", v.Orelse))
 			}
+			ss.Pop()
 			s.Add(stmt)
 
 		case *ast.While:
-			stmt := jen.For(s.goExpr(v.Test))
+			ss := s.Push()
+			stmt := jen.For(ss.goExpr(v.Test))
 			if k, ok := v.Test.(*ast.NameConstant); ok && k.Value == py.True {
 				stmt = jen.For()
 			}
-			stmt = stmt.Block(s.parseBody("", v.Body))
+			stmt = stmt.Block(ss.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
-				stmt.Else().Block(s.parseBody("", v.Orelse))
+				stmt.Else().Block(ss.parseBody("", v.Orelse))
 			}
+			ss.Pop()
 			s.Add(stmt)
 
 		case *ast.Try:
+			ss := s.Push()
 			stmt := jen.If(
 				jen.Err().Op(":=").Func().Params().Params(goException).Block(
 					jen.Comment("try"),
-					s.parseBody("", v.Body),
+					ss.parseBody("", v.Body),
 				).Call(),
 				jen.Err().Op("!=").Nil())
 
@@ -1102,11 +1107,11 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 					g.Add(jen.Comment("except"))
 
 					for _, h := range v.Handlers {
-						ch := jen.Case(s.goExpr(h.ExprType))
+						ch := jen.Case(ss.goExpr(h.ExprType))
 						if h.Name != "" {
-							ch.Block(jen.Commentf("as %v", h.Name), s.parseBody("", h.Body))
+							ch.Block(jen.Commentf("as %v", h.Name), ss.parseBody("", h.Body))
 						} else {
-							ch.Block(s.parseBody("", h.Body))
+							ch.Block(ss.parseBody("", h.Body))
 						}
 
 						g.Add(ch)
@@ -1117,12 +1122,13 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			stmt.Block(body)
 
 			if len(v.Orelse) > 0 {
-				stmt.Else().Block(s.parseBody("", v.Orelse))
+				stmt.Else().Block(ss.parseBody("", v.Orelse))
 			}
 
 			if len(v.Finalbody) > 0 {
-				stmt.Line().Block(jen.Comment("finally"), s.parseBody("", v.Finalbody))
+				stmt.Line().Block(jen.Comment("finally"), ss.parseBody("", v.Finalbody))
 			}
+			ss.Pop()
 			s.Add(stmt)
 
 		case *ast.Raise:
@@ -1162,17 +1168,19 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			// We should really create an anonymous function
 			// with a defer (that we can't really fill, but in a few cases)
 			s.Add(jen.BlockFunc(func(g *jen.Group) {
+				ss := s.Push()
 				g.Comment("with")
 
 				for _, item := range v.Items {
 					if item.OptionalVars != nil {
-						g.Add(s.goExpr(item.OptionalVars).Op(":=").Add(s.goExpr(item.ContextExpr)))
+						g.Add(ss.goExpr(item.OptionalVars).Op(":=").Add(ss.goExpr(item.ContextExpr)))
 					} else {
-						g.Add(s.goExpr(item.ContextExpr))
+						g.Add(ss.goExpr(item.ContextExpr))
 					}
 				}
 
-				g.Line().Add(s.parseBody("", v.Body))
+				g.Line().Add(ss.parseBody("", v.Body))
+				ss.Pop()
 			}))
 
 		default:
