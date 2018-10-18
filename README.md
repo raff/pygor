@@ -6,6 +6,9 @@ Python to Go Regurgitator
 
 A Python 3 to Go transpiler, with many things to be desired.
 
+Note that the parser is currently targeted to Python 3.4 so some latest Python 3 additions are not supported (yet)
+and are reported as parsing errors.
+
 ## installation
 
     go get -v -u github.com/raff/pygor
@@ -14,6 +17,18 @@ A Python 3 to Go transpiler, with many things to be desired.
 
     go run pygor.go python_code.py
     
+    Usage of pygor:
+      -d int
+            Parser debug level 0-4
+      -lines
+            add source line numbers
+      -main
+            generate a runnable application (main package)
+      -panic
+            panic on unknown expression, to get a stacktrace
+      -verbose
+            print statement and expressions
+
 ## tests
 
     for f in tests/*.py
