@@ -38,6 +38,9 @@ var (
 		"Dict":  "DictΠ",
 		"List":  "ListΠ",
 		"Tuple": "TupleΠ",
+
+		// these are go keywords that need to be renamed
+		"type": "typeΠ",
 	}
 
 	goAny       = jen.Qual("github.com/raff/pygor/runtime", "Any")
@@ -72,6 +75,18 @@ func unknown(typ string, v interface{}) *jen.Statement {
 	}
 
 	return jen.Lit(msg)
+}
+
+func trimlines(s py.String) string {
+	var lines []string
+
+	for _, l := range strings.Split(string(s), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 type Scope struct {
@@ -251,7 +266,7 @@ func (s *Scope) goOpExt(op ast.OperatorNumber, ext string) *jen.Statement {
 	case ast.BitAnd:
 		return jen.Op("&" + ext)
 	case ast.FloorDiv:
-		return jen.Op("//" + ext)
+		return jen.Op("/ /*floor*/" + ext)
 	}
 
 	return unknown("OP", op.String()+ext)
@@ -334,6 +349,15 @@ func (s *Scope) goExprList(values []ast.Expr) *jen.Statement {
 			g.Add(s.goExpr(v))
 		}
 	})
+}
+
+func (s *Scope) strExprList(values []ast.Expr) string {
+	var sx []string
+	for _, v := range values {
+		sx = append(sx, s.goExpr(v).GoString())
+	}
+
+	return strings.Join(sx, ",")
 }
 
 func (s *Scope) goExprOrList(expr ast.Expr) *jen.Statement {
@@ -831,7 +855,7 @@ func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 	}
 
 	// for x in iterable
-	return jen.For(s.goExpr(target).Op(":=").Range().Add(s.goExpr(iter)))
+	return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(iter)))
 }
 
 func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement) {
@@ -865,7 +889,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 		if expr, ok := stmt.(*ast.ExprStmt); ok {
 			if str, ok := expr.Value.(*ast.Str); ok {
 				// a top level string expression is a __doc__ string
-				s.Add(jen.Comment(string(str.S)).Line())
+				s.Add(jen.Comment(trimlines(str.S)).Line())
 				continue
 			}
 		}
@@ -959,7 +983,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 				cdefs := ""
 
 				if len(v.Bases) > 0 {
-					cdefs += " " + s.goExpr(v.Bases).GoString()
+					cdefs += " " + s.strExprList(v.Bases)
 				}
 
 				if len(v.Keywords) > 0 {
@@ -1194,11 +1218,13 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 }
 
 func main() {
-	flag.IntVar(&debugLevel, "d", debugLevel, "Debug level 0-4")
+	flag.IntVar(&debugLevel, "d", debugLevel, "Parser debug level 0-4")
 	flag.BoolVar(&panicUnknown, "panic", panicUnknown, "panic on unknown expression, to get a stacktrace")
 	flag.BoolVar(&verbose, "verbose", verbose, "print statement and expressions")
 	flag.BoolVar(&lineno, "lines", lineno, "add source line numbers")
 	flag.BoolVar(&mainpackage, "main", mainpackage, "generate a runnable application (main package)")
+
+	ignore := flag.Bool("ignore", false, "ignore errors")
 	flag.Parse()
 
 	parser.SetDebug(debugLevel)
@@ -1251,7 +1277,11 @@ func main() {
 
 		for _, s := range stmts {
 			if err := s.Render(os.Stdout); err != nil {
-				log.Fatal(err)
+				if *ignore {
+					fmt.Println("ERROR:", err)
+				} else {
+					log.Fatal(err)
+				}
 			}
 		}
 	}

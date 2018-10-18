@@ -15,6 +15,9 @@ for x in [1,2,3,4]:
 for k, v in d.items():
     print(x)
 
+for a, b, c in [(1,2,3), (4,5,6)]:
+    print(a,"x",b,"x",c)
+
 while True:
     print("forever")
 

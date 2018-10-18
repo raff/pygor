@@ -20,6 +20,8 @@ and are reported as parsing errors.
     Usage of pygor:
       -d int
             Parser debug level 0-4
+      -ignore
+            ignore errors
       -lines
             add source line numbers
       -main
