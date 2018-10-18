@@ -19,6 +19,7 @@ var (
 	debugLevel   int
 	panicUnknown bool
 	verbose      bool
+	lineno       bool
 	mainpackage  bool
 
 	gokeywords = map[string]string{
@@ -39,6 +40,7 @@ var (
 		"Tuple": "TupleΠ",
 	}
 
+	goAny       = jen.Qual("github.com/raff/gopyr/runtime", "Any")
 	goList      = jen.Qual("github.com/raff/gopyr/runtime", "List")
 	goTuple     = jen.Qual("github.com/raff/gopyr/runtime", "Tuple")
 	goDict      = jen.Qual("github.com/raff/gopyr/runtime", "Dict")
@@ -77,26 +79,81 @@ type Scope struct {
 	vars    map[string]struct{}
 	imports map[string]string
 
+	file *jen.File
+
+	parsed  *jen.Statement
+	body    []*jen.Statement
+	methods []*jen.Statement
+
 	next *Scope
 	prev *Scope
 }
 
-func NewScope() *Scope {
-	return &Scope{vars: make(map[string]struct{}), imports: make(map[string]string)}
+func NewScope(f *jen.File, imp ...map[string]string) *Scope {
+	scope := &Scope{vars: make(map[string]struct{}), parsed: jen.Null(), file: f}
+	if len(imp) > 0 {
+		scope.imports = imp[0]
+	} else {
+		scope.imports = make(map[string]string)
+	}
+
+	return scope
+}
+
+func (s *Scope) Render() (parsed *jen.Statement) {
+	// this is done in order to generate the correct dependencies
+	// since the render fails on certaing blocks
+	//
+	// the real rendering is done at the end,
+	// formatting the list of statements one at a time
+	s.file.Group = &jen.Group{}
+	s.file.Add(s.parsed)
+	if err := s.file.Render(ioutil.Discard); err != nil {
+		//log.Println("RENDER", err)
+	}
+
+	parsed, s.parsed = s.parsed, jen.Null()
+	return
+}
+
+func (s *Scope) Top() bool {
+	return s.prev == nil
 }
 
 func (s *Scope) Push() *Scope {
-	next := &Scope{vars: make(map[string]struct{}), imports: s.imports}
-	s.next = next
-	next.level = s.level + 1
-	next.prev = s
-	return next
+	s.next = NewScope(s.file, s.imports)
+	s.next.prev = s
+	s.next.level = s.level + 1
+	if verbose {
+		log.Println("PUSH", s.next.level)
+	}
+	return s.next
 }
 
 func (s *Scope) Pop() *Scope {
-	prev := s.prev
-	prev.next = nil
-	return prev
+	s.parsed = nil
+	s.prev.next = nil
+	if s.methods != nil {
+		s.prev.methods = append(s.prev.methods, s.methods...)
+		s.methods = nil
+	}
+	if s.prev.prev == nil && s.prev.methods != nil {
+		s.prev.body = append(s.prev.body, s.prev.methods...)
+		s.prev.methods = nil
+	}
+	if verbose {
+		log.Println("POP", s.prev.level)
+	}
+	return s.prev
+}
+
+func (s *Scope) Add(stmt *jen.Statement) {
+	if verbose {
+		log.Printf("GGG %#v\n", stmt)
+	}
+
+	s.parsed.Add(stmt)
+	s.body = append(s.body, stmt)
 }
 
 // check if the element in the expression list are new names
@@ -327,7 +384,7 @@ func (s *Scope) goKvals(kk []*ast.Keyword, def bool) *jen.Statement {
 
 func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 	if verbose {
-		fmt.Printf("XXX %T %#v\n\n", expr, expr)
+		log.Printf("XXX %T %#v\n\n", expr, expr)
 	}
 
 	switch v := expr.(type) {
@@ -505,8 +562,8 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 			inner = inner1
 		}
 		inner.Add(jen.Block(jen.Id("c").Op("<-").Add(s.goExpr(v.Elt))))
-		return jen.Func().Params().Params(jen.Id("c").Chan().Id("Any")).Block(
-			jen.Id("c").Op("=").Make(jen.Chan().Id("Any")),
+		return jen.Func().Params().Params(jen.Id("c").Chan().Add(goAny)).Block(
+			jen.Id("c").Op("=").Make(jen.Chan().Add(goAny)),
 			jen.Go().Func().Params().Block(outer, jen.Close(jen.Id("c"))).Call(),
 			jen.Return(),
 		).Call()
@@ -562,7 +619,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) (*je
 		if arg.Annotation != nil {
 			p.Add(s.goExpr(arg.Annotation))
 		} else {
-			p.Add(jen.Id("Any"))
+			p.Add(goAny)
 		}
 
 		params = append(params, p)
@@ -575,7 +632,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) (*je
 		if arg.Annotation != nil {
 			p.Add(s.goExpr(arg.Annotation))
 		} else {
-			p.Add(jen.Id("Any"))
+			p.Add(goAny)
 		}
 
 		p.Commentf("/*=%v*/", s.goExpr(args.KwDefaults[i]).GoString())
@@ -589,7 +646,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) (*je
 		if args.Vararg.Annotation != nil {
 			p.Add(s.goExpr(args.Vararg.Annotation))
 		} else {
-			p.Add(jen.Id("Any"))
+			p.Add(goAny)
 		}
 
 		params = append(params, p)
@@ -602,7 +659,7 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) (*je
 		if args.Vararg.Annotation != nil {
 			p.Add(s.goExpr(args.Kwarg.Annotation))
 		} else {
-			p.Add(jen.Id("Any"))
+			p.Add(goAny)
 		}
 
 		params = append(params, p)
@@ -777,41 +834,38 @@ func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 	return jen.For(s.goExpr(target).Op(":=").Range().Add(s.goExpr(iter)))
 }
 
-// parse a block/list of statements
-func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
-	p, _, _ := s.parseBodyEx(classname, body)
-	return p
+func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement) {
+	if len(assign.Targets) == 1 {
+		return s.goExprOrList(assign.Targets[0]), s.goExprOrList(assign.Value)
+	}
+
+	return s.goExpr(assign.Targets), s.goExpr(assign.Value)
 }
 
 // parse a block/list of statements anre returns
 // - the block, as single statement
 // - the list of statements (useful only in the main module)
 // - the type of return (in a function body, true: yield, false: return)
-func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, []*jen.Statement, bool) {
-	s.level += 1
-
-	parsed := jen.Null()
-	stmts := []*jen.Statement{}
-	generator := false
-
-	add := func(s *jen.Statement) {
-		if verbose {
-			fmt.Println("GGG", s.GoString())
-		}
-
-		parsed.Add(s)
-		stmts = append(stmts, s)
+func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
+	if verbose {
+		log.Println("PARSE", s.level)
 	}
+
+	generator := false
 
 	for i, stmt := range body {
 		if i > 0 {
-			add(jen.Line())
+			s.Add(jen.Line())
+		}
+
+		if lineno {
+			s.Add(jen.Commentf("// line %v\n", stmt.GetLineno()))
 		}
 
 		if expr, ok := stmt.(*ast.ExprStmt); ok {
 			if str, ok := expr.Value.(*ast.Str); ok {
 				// a top level string expression is a __doc__ string
-				add(jen.Comment(string(str.S)))
+				s.Add(jen.Comment(string(str.S)).Line())
 				continue
 			}
 		}
@@ -821,19 +875,19 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			s.imports[string(v.Module)] = string(v.Module)
 			for _, i := range v.Names {
 				if i.AsName != "" {
-					add(jen.Commentf("import %v %q // %v", i.AsName, v.Module, i.Name))
+					s.Add(jen.Commentf("import %v %q // %v", i.AsName, v.Module, i.Name))
 				} else {
-					add(jen.Commentf("import %q // %v", v.Module, i.Name))
+					s.Add(jen.Commentf("import %q // %v", v.Module, i.Name))
 				}
 			}
 
 		case *ast.Import:
 			for _, i := range v.Names {
 				if i.AsName != "" {
-					add(jen.Commentf("import %s %q", i.AsName, i.Name))
+					s.Add(jen.Commentf("import %s %q", i.AsName, i.Name))
 					s.imports[string(i.AsName)] = string(i.Name)
 				} else {
-					add(jen.Commentf("import %q", i.Name))
+					s.Add(jen.Commentf("import %q", i.Name))
 					s.imports[string(i.Name)] = string(i.Name)
 				}
 			}
@@ -843,17 +897,17 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			var returns jen.Code
 
 			for _, d := range v.DecoratorList {
-				add(jen.Commentf("// @%v\n", s.goExpr(d).GoString()))
+				s.Add(jen.Commentf("// @%v\n", s.goExpr(d).GoString()))
 			}
 
-			fs := s.Push()
+			ss := s.Push()
 
-			arguments, recv := fs.goFunctionArguments(v.Args, classname != "")
+			arguments, recv := ss.goFunctionArguments(v.Args, classname != "")
 			if recv != nil {
 				receiver = jen.Params(goId(recv.Arg).Op("*").Id(classname))
 			}
 			if v.Returns != nil && !isNone(v.Returns) {
-				returns = jen.Params(fs.goExprOrList(v.Returns))
+				returns = jen.Params(ss.goExprOrList(v.Returns))
 			}
 
 			stmt := jen.Func()
@@ -864,7 +918,7 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 				} else {
 					stmt.Add(receiver).Add(goId(v.Name))
 				}
-			} else if s.level <= 1 {
+			} else if s.level < 1 {
 				stmt.Add(goId(v.Name))
 			} else {
 				stmt = goId(v.Name).Op(":=").Func()
@@ -874,33 +928,14 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			if returns != nil {
 				stmt.Add(returns)
 			}
-			stmt.Block(fs.parseBody("", v.Body))
-			fs.Pop()
-			add(stmt)
+
+			parsed := ss.parseBody("", v.Body)
+			ss.Pop()
+
+			stmt.Block(parsed).Line()
+			s.Add(stmt)
 
 		case *ast.ClassDef:
-			for _, d := range v.DecoratorList {
-				add(jen.Commentf("@%v\n", s.goExpr(d).GoString()))
-			}
-
-			classdef := jen.Type().Add(goId(v.Name)).StructFunc(func(g *jen.Group) {
-				cdefs := ""
-
-				if len(v.Bases) > 0 || len(v.Keywords) > 0 {
-					if len(v.Bases) > 0 {
-						cdefs += " " + s.goExpr(v.Bases).GoString()
-					}
-
-					if len(v.Keywords) > 0 {
-						cdefs += " " + s.goExpr(v.Keywords).GoString()
-					}
-				}
-
-				g.Add(jen.Commentf("%v", cdefs))
-			})
-
-			add(classdef.Line())
-
 			/***********************************
 			  Here we should be expecting only:
 
@@ -918,50 +953,68 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			  - class methods: parse body and add to most outer scope
 			  ***********************************/
 
-			switch len(v.Body) {
-			case 0:
-				continue
+			ss := s.Push()
 
-			case 1:
-				if _, ok := v.Body[0].(*ast.Pass); ok {
-					continue
+			classdef := jen.Type().Add(goId(v.Name)).StructFunc(func(g *jen.Group) {
+				cdefs := ""
+
+				if len(v.Bases) > 0 {
+					cdefs += " " + s.goExpr(v.Bases).GoString()
 				}
+
+				if len(v.Keywords) > 0 {
+					cdefs += " " + s.goExpr(v.Keywords).GoString()
+				}
+
+				if cdefs != "" {
+					g.Add(jen.Commentf("%v", cdefs))
+				}
+
+				for _, pst := range v.Body {
+					switch pv := pst.(type) {
+					case *ast.Pass:
+						continue
+
+					case *ast.ExprStmt: // error if not string
+						if str, ok := pv.Value.(*ast.Str); ok {
+							g.Add(jen.Comment(string(str.S)))
+						} else {
+							log.Fatalf("unexpected expression in class definition: %#v", pv)
+						}
+
+					case *ast.Assign:
+						target, value := s.goAssign(pv)
+						g.Add(target.Add(goAny).Commentf("= %#v", value))
+
+					case *ast.FunctionDef:
+						s.methods = append(s.methods,
+							ss.parseBody(string(v.Name), []ast.Stmt{pv}))
+
+					default:
+						log.Fatalf("unexpected statement in class definition: %#v", pv)
+					}
+				}
+			}).Line()
+
+			for _, d := range v.DecoratorList {
+				s.Add(jen.Commentf("@%v\n", s.goExpr(d).GoString()))
 			}
 
-			/*
-			   for _, pst := range v.Body {
-			           switch v := pst.(type) {
-			           case *ast.ExprStmt:  // error if not string
-			               if str, ok := expr.Value.(*ast.Str); ok {
-			               } else {
-			                   // error
-			               }
-
-			           case *ast.Assign:
-			               //
-
-			           case *ast.FunctionDef:
-			               //
-
-			           default:
-			               // error
-			           }
-			   }
-			*/
-
-			add(s.parseBody(string(v.Name), v.Body))
+			s.Add(classdef)
+			ss.Pop() // after s.Add(classdef), to add the methods after the type definition
 
 		case *ast.Assign:
-			stmt := s.goExpr(v.Targets).Op("=").Add(s.goExpr(v.Value))
+			target, value := s.goAssign(v)
+			stmt := target.Op("=").Add(value)
 			if classname != "" {
 				stmt = jen.Var().Commentf("/*%v*/", classname).Add(stmt)
 			} else if s.newNames(v.Targets) {
 				stmt = jen.Var().Add(stmt)
 			}
-			add(stmt)
+			s.Add(stmt)
 
 		case *ast.AugAssign:
-			add(s.goExpr(v.Target).Add(s.goOpExt(v.Op, "=")).Add(s.goExpr(v.Value)))
+			s.Add(s.goExpr(v.Target).Add(s.goOpExt(v.Op, "=")).Add(s.goExpr(v.Value)))
 
 		case *ast.ExprStmt:
 			switch xStmt := v.Value.(type) {
@@ -971,8 +1024,8 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 				if xStmt.Value != nil {
 					ret = s.goExprOrList(xStmt.Value)
 				}
-				//add(jen.Commentf("yield %s", ret.GoString()))
-				add(jen.Return(ret).Comment("yield"))
+				//s.Add(jen.Commentf("yield %s", ret.GoString()))
+				s.Add(jen.Return(ret).Comment("yield"))
 
 			case *ast.YieldFrom:
 				generator = true
@@ -980,46 +1033,48 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 				if xStmt.Value != nil {
 					ret = s.goExprOrList(xStmt.Value)
 				}
-				//add(jen.Commentf("yield from %s", ret.GoString()))
-				add(jen.Return(ret).Comment("yield from"))
+				//s.Add(jen.Commentf("yield from %s", ret.GoString()))
+				s.Add(jen.Return(ret).Comment("yield from"))
 
 			default:
-				add(s.goExpr(v.Value)) //.Line()
+				s.Add(s.goExpr(v.Value)) //.Line()
 			}
 
 		case *ast.Pass:
-			add(jen.Comment("pass"))
+			s.Add(jen.Comment("pass"))
 
 		case *ast.Break:
-			add(jen.Break())
+			s.Add(jen.Break())
 
 		case *ast.Continue:
-			add(jen.Continue())
+			s.Add(jen.Continue())
 
 		case *ast.Return:
 			if v.Value == nil {
-				add(jen.Return())
+				s.Add(jen.Return())
 			} else {
-				add(jen.Return(s.goExprOrList(v.Value)))
+				s.Add(jen.Return(s.goExprOrList(v.Value)))
 			}
 
 		case *ast.If:
-			stmt := jen.If(s.goExpr(v.Test)).Block(s.parseBody("", v.Body))
+			ss := s.Push()
+			stmt := jen.If(s.goExpr(v.Test)).Block(ss.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
 				if _, ok := v.Orelse[0].(*ast.If); ok && len(v.Orelse) == 1 {
-					stmt.Else().Add(s.parseBody("", v.Orelse))
+					stmt.Else().Add(ss.parseBody("", v.Orelse))
 				} else {
-					stmt.Else().Block(s.parseBody("", v.Orelse))
+					stmt.Else().Block(ss.parseBody("", v.Orelse))
 				}
 			}
-			add(stmt)
+			ss.Pop()
+			s.Add(stmt)
 
 		case *ast.For:
 			stmt := s.goFor(v.Target, v.Iter).Block(s.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
 				stmt.Else().Block(s.parseBody("", v.Orelse))
 			}
-			add(stmt)
+			s.Add(stmt)
 
 		case *ast.While:
 			stmt := jen.For(s.goExpr(v.Test))
@@ -1030,7 +1085,7 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			if len(v.Orelse) > 0 {
 				stmt.Else().Block(s.parseBody("", v.Orelse))
 			}
-			add(stmt)
+			s.Add(stmt)
 
 		case *ast.Try:
 			stmt := jen.If(
@@ -1068,45 +1123,45 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			if len(v.Finalbody) > 0 {
 				stmt.Line().Block(jen.Comment("finally"), s.parseBody("", v.Finalbody))
 			}
-			add(stmt)
+			s.Add(stmt)
 
 		case *ast.Raise:
 			stmt := jen.Return(jen.Id("RaisedException").Call(s.goExpr(v.Exc)))
 			if v.Cause != nil {
 				stmt.Commentf("cause: %v", s.goExpr(v.Cause).GoString())
 			}
-			add(stmt)
+			s.Add(stmt)
 
 		case *ast.Assert:
 			if v.Msg != nil {
-				add(jen.Id("Assert").Call(s.goExpr(v.Test), s.goExpr(v.Msg)))
+				s.Add(jen.Id("Assert").Call(s.goExpr(v.Test), s.goExpr(v.Msg)))
 			} else {
-				add(jen.Id("Assert").Call(s.goExpr(v.Test), jen.Lit("")))
+				s.Add(jen.Id("Assert").Call(s.goExpr(v.Test), jen.Lit("")))
 			}
 
 		case *ast.Global:
-			add(jen.Commentf("global %v", s.goIdentifiers(v.Names).GoString()))
+			s.Add(jen.Commentf("global %v", s.goIdentifiers(v.Names).GoString()))
 
 		case *ast.Nonlocal:
-			add(jen.Commentf("nonlocal %v", s.goIdentifiers(v.Names).GoString()))
+			s.Add(jen.Commentf("nonlocal %v", s.goIdentifiers(v.Names).GoString()))
 
 		case *ast.Delete:
 			for _, t := range v.Targets {
 				if st, ok := t.(*ast.Subscript); ok {
 					if i, ok := st.Slice.(*ast.Index); ok {
-						add(jen.Delete(s.goExpr(st.Value), s.goExpr(i.Value)))
+						s.Add(jen.Delete(s.goExpr(st.Value), s.goExpr(i.Value)))
 					} else {
 						log.Panicf("unexpected DELETE %#v", st)
 					}
 				} else {
-					add(jen.Comment(unknown("DELETE", t).GoString()))
+					s.Add(jen.Comment(unknown("DELETE", t).GoString()))
 				}
 			}
 
 		case *ast.With:
 			// We should really create an anonymous function
 			// with a defer (that we can't really fill, but in a few cases)
-			add(jen.BlockFunc(func(g *jen.Group) {
+			s.Add(jen.BlockFunc(func(g *jen.Group) {
 				g.Comment("with")
 
 				for _, item := range v.Items {
@@ -1121,18 +1176,20 @@ func (s *Scope) parseBodyEx(classname string, body []ast.Stmt) (*jen.Statement, 
 			}))
 
 		default:
-			add(jen.Comment(unknown("STMT", stmt).GoString()))
+			s.Add(jen.Comment(unknown("STMT", stmt).GoString()))
 		}
 	}
 
-	s.level -= 1
-	return parsed, stmts, generator
+	_ = generator
+
+	return s.Render()
 }
 
 func main() {
 	flag.IntVar(&debugLevel, "d", debugLevel, "Debug level 0-4")
 	flag.BoolVar(&panicUnknown, "panic", panicUnknown, "panic on unknown expression, to get a stacktrace")
 	flag.BoolVar(&verbose, "verbose", verbose, "print statement and expressions")
+	flag.BoolVar(&lineno, "lines", lineno, "add source line numbers")
 	flag.BoolVar(&mainpackage, "main", mainpackage, "generate a runnable application (main package)")
 	flag.Parse()
 
@@ -1151,7 +1208,7 @@ func main() {
 
 		defer in.Close()
 		if debugLevel > 0 {
-			fmt.Printf(path, "-----------------\n")
+			log.Printf(path, "-----------------\n")
 		}
 
 		fi, err := in.Stat()
@@ -1174,27 +1231,19 @@ func main() {
 			log.Fatal("expected Module, got", tree)
 		}
 
-		scope := NewScope()
+		scope := NewScope(jen.NewFile(pname))
+		scope.parseBody("", m.Body)
 
-		parsed, stmts, _ := scope.parseBodyEx("", m.Body)
+		fmt.Println("// generated by gopyr")
+		fmt.Println("package", pname)
+		fmt.Println()
+		scope.file.RenderImports(os.Stdout)
 
-		f := jen.NewFile(pname)
-		f.PackageComment("generated by gopyr")
-		f.Add(parsed)
+		stmts := append(scope.body, jen.Line())
 
-		if false {
-			f.Render(os.Stdout)
-		} else {
-			f.Render(ioutil.Discard)
-			fmt.Println("// generated by gopyr")
-			fmt.Println("package", pname)
-			fmt.Println()
-			f.RenderImports(os.Stdout)
-
-			stmts = append(stmts, jen.Line())
-
-			for _, s := range stmts {
-				s.Render(os.Stdout)
+		for _, s := range stmts {
+			if err := s.Render(os.Stdout); err != nil {
+				log.Fatal(err)
 			}
 		}
 	}
