@@ -858,12 +858,40 @@ func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 	return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(iter)))
 }
 
-func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement) {
-	if len(assign.Targets) == 1 {
-		return s.goExprOrList(assign.Targets[0]), s.goExprOrList(assign.Value)
+func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement, *jen.Statement) {
+	goType := goAny.Clone()
+
+	switch t := assign.Value.(type) {
+	case *ast.Tuple:
+		goType = goTuple.Clone()
+
+	case *ast.List:
+		goType = goList.Clone()
+
+	case *ast.Dict:
+		goType = goDict.Clone()
+
+	case *ast.Str:
+		goType = jen.String()
+
+	case *ast.Num:
+		switch t.N.(type) {
+		case py.Int:
+			goType = jen.Int()
+
+		case py.Float:
+			goType = jen.Float64()
+
+		case py.Complex:
+			goType = jen.Complex128()
+		}
 	}
 
-	return s.goExpr(assign.Targets), s.goExpr(assign.Value)
+	if len(assign.Targets) == 1 {
+		return s.goExprOrList(assign.Targets[0]), s.goExprOrList(assign.Value), goType
+	}
+
+	return s.goExpr(assign.Targets), s.goExpr(assign.Value), goType
 }
 
 // parse a block/list of statements anre returns
@@ -1007,8 +1035,8 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 						}
 
 					case *ast.Assign:
-						target, value := s.goAssign(pv)
-						g.Add(target.Add(goAny).Commentf("= %#v", value))
+						target, value, typ := s.goAssign(pv)
+						g.Add(target.Add(typ).Commentf("= %#v", value))
 
 					case *ast.FunctionDef:
 						s.methods = append(s.methods,
@@ -1028,11 +1056,9 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			ss.Pop() // after s.Add(classdef), to add the methods after the type definition
 
 		case *ast.Assign:
-			target, value := s.goAssign(v)
+			target, value, _ := s.goAssign(v)
 			stmt := target.Op("=").Add(value)
-			if classname != "" {
-				stmt = jen.Var().Commentf("/*%v*/", classname).Add(stmt)
-			} else if s.newNames(v.Targets) {
+			if s.newNames(v.Targets) {
 				stmt = jen.Var().Add(stmt)
 			}
 			s.Add(stmt)
