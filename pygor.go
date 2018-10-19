@@ -92,10 +92,26 @@ func trimlines(s py.String) string {
 type ScopeReturn int
 
 const (
-	ReturnNone ScopeReturn = iota
+	ReturnNoFunction ScopeReturn = iota
+	ReturnNone
 	ReturnReturn
 	ReturnYield
 )
+
+func (r ScopeReturn) String() string {
+	switch r {
+	case ReturnNoFunction:
+		return "NotAFunction"
+	case ReturnNone:
+		return "None"
+	case ReturnReturn:
+		return "Return"
+	case ReturnYield:
+		return "Yield"
+	}
+
+	return "UNKNOWN"
+}
 
 type Scope struct {
 	level   int // nesting level
@@ -155,9 +171,12 @@ func (s *Scope) Push() *Scope {
 	return s.next
 }
 
-func (s *Scope) Pop() *Scope {
+func (s *Scope) Pop(popret bool) *Scope {
 	s.parsed = nil
 	s.prev.next = nil
+	if !popret {
+		s.prev.returnType = s.returnType
+	}
 	if s.methods != nil {
 		s.prev.methods = append(s.prev.methods, s.methods...)
 		s.methods = nil
@@ -913,8 +932,6 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 		log.Println("PARSE", s.level)
 	}
 
-	s.returnType = ReturnNone
-
 	for i, stmt := range body {
 		if i > 0 {
 			s.Add(jen.Line())
@@ -986,13 +1003,18 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 				stmt = goId(v.Name).Op(":=").Func()
 			}
 
+			ss.returnType = ReturnNone
+			parsed := ss.parseBody("", v.Body)
+			if returns == nil && ss.returnType != ReturnNone {
+				returns = goAny
+			}
+
+			ss.Pop(true)
+
 			stmt.Params(arguments)
 			if returns != nil {
 				stmt.Add(returns)
 			}
-
-			parsed := ss.parseBody("", v.Body)
-			ss.Pop()
 
 			stmt.Block(parsed).Line()
 			s.Add(stmt)
@@ -1063,7 +1085,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			}
 
 			s.Add(classdef)
-			ss.Pop() // after s.Add(classdef), to add the methods after the type definition
+			ss.Pop(true) // after s.Add(classdef), to add the methods after the type definition
 
 		case *ast.Assign:
 			target, value, _ := s.goAssign(v)
@@ -1127,7 +1149,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 					stmt.Else().Block(ss.parseBody("", v.Orelse))
 				}
 			}
-			ss.Pop()
+			ss.Pop(false)
 			s.Add(stmt)
 
 		case *ast.For:
@@ -1136,7 +1158,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			if len(v.Orelse) > 0 {
 				stmt.Else().Block(ss.parseBody("", v.Orelse))
 			}
-			ss.Pop()
+			ss.Pop(false)
 			s.Add(stmt)
 
 		case *ast.While:
@@ -1149,7 +1171,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			if len(v.Orelse) > 0 {
 				stmt.Else().Block(ss.parseBody("", v.Orelse))
 			}
-			ss.Pop()
+			ss.Pop(false)
 			s.Add(stmt)
 
 		case *ast.Try:
@@ -1189,7 +1211,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			if len(v.Finalbody) > 0 {
 				stmt.Line().Block(jen.Comment("finally"), ss.parseBody("", v.Finalbody))
 			}
-			ss.Pop()
+			ss.Pop(false)
 			s.Add(stmt)
 
 		case *ast.Raise:
@@ -1241,12 +1263,16 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 				}
 
 				g.Line().Add(ss.parseBody("", v.Body))
-				ss.Pop()
+				ss.Pop(false)
 			}))
 
 		default:
 			s.Add(jen.Comment(unknown("STMT", stmt).GoString()))
 		}
+	}
+
+	if verbose {
+		log.Println("RETURN", s.returnType.String())
 	}
 
 	return s.Render()
