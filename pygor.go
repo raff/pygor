@@ -89,6 +89,14 @@ func trimlines(s py.String) string {
 	return strings.Join(lines, "\n")
 }
 
+type ScopeReturn int
+
+const (
+	ReturnNone ScopeReturn = iota
+	ReturnReturn
+	ReturnYield
+)
+
 type Scope struct {
 	level   int // nesting level
 	vars    map[string]struct{}
@@ -99,6 +107,8 @@ type Scope struct {
 	parsed  *jen.Statement
 	body    []*jen.Statement
 	methods []*jen.Statement
+
+	returnType ScopeReturn
 
 	next *Scope
 	prev *Scope
@@ -903,7 +913,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 		log.Println("PARSE", s.level)
 	}
 
-	generator := false
+	s.returnType = ReturnNone
 
 	for i, stmt := range body {
 		if i > 0 {
@@ -1069,22 +1079,22 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 		case *ast.ExprStmt:
 			switch xStmt := v.Value.(type) {
 			case *ast.Yield:
-				generator = true
 				ret := jen.Null()
 				if xStmt.Value != nil {
 					ret = s.goExprOrList(xStmt.Value)
 				}
 				//s.Add(jen.Commentf("yield %s", ret.GoString()))
 				s.Add(jen.Return(ret).Comment("yield"))
+				s.returnType = ReturnYield
 
 			case *ast.YieldFrom:
-				generator = true
 				ret := jen.Null()
 				if xStmt.Value != nil {
 					ret = s.goExprOrList(xStmt.Value)
 				}
 				//s.Add(jen.Commentf("yield from %s", ret.GoString()))
 				s.Add(jen.Return(ret).Comment("yield from"))
+				s.returnType = ReturnYield
 
 			default:
 				s.Add(s.goExpr(v.Value)) //.Line()
@@ -1105,6 +1115,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			} else {
 				s.Add(jen.Return(s.goExprOrList(v.Value)))
 			}
+			s.returnType = ReturnReturn
 
 		case *ast.If:
 			ss := s.Push()
@@ -1237,8 +1248,6 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			s.Add(jen.Comment(unknown("STMT", stmt).GoString()))
 		}
 	}
-
-	_ = generator
 
 	return s.Render()
 }
