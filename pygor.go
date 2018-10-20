@@ -535,7 +535,7 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 
 	case *ast.UnaryOp:
 		if v.Op == ast.Invert {
-			return s.goUnary(v.Op).Parens(s.goExpr(v.Operand).Op("+").Lit(1))
+			return jen.Op("-").Parens(s.goExpr(v.Operand).Op("+").Lit(1))
 		} else {
 			return s.goUnary(v.Op).Add(s.goExpr(v.Operand))
 		}
@@ -559,6 +559,10 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 				}
 				return printfunc.Params(printfmt, params)
 			}
+		}
+
+		if v.Op == ast.Pow { // **
+			return jen.Qual("math", "Pow").Params(s.goExpr(v.Left), s.goExpr(v.Right))
 		}
 
 		return s.goExpr(v.Left).Add(s.goOp(v.Op)).Add(s.goExpr(v.Right))
