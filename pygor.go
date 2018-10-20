@@ -420,6 +420,14 @@ func (s *Scope) goExprOrList(expr ast.Expr) *jen.Statement {
 	return s.goExpr(expr)
 }
 
+func lenExpr(expr ast.Expr) int {
+	if tuple, ok := expr.(*ast.Tuple); ok {
+		return len(tuple.Elts)
+	}
+
+	return 1
+}
+
 func isNone(expr ast.Expr) bool {
 	if c, ok := expr.(*ast.NameConstant); ok {
 		return c.Value == py.None
@@ -877,6 +885,9 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 
 func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 	if c, ok := iter.(*ast.Call); ok { // check for "for x in range(n)"
+		//
+		// for x in range(y)
+		//
 		if n, ok := c.Func.(*ast.Name); ok && string(n.Id) == "range" {
 			if len(c.Args) < 1 || len(c.Args) > 3 {
 				panic("range expects 1 to 3 arguments")
@@ -905,12 +916,41 @@ func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 				t.Clone().Op("+=").Add(step))
 		}
 
-		t := s.goExprOrList(target)
-		return jen.For(t.Op(":=").Range().Add(s.goExpr(iter)))
+		//
+		// for i, v in enumerate(l)
+		//
+		if n, ok := c.Func.(*ast.Name); ok && string(n.Id) == "enumerate" && len(c.Args) == 1 {
+			return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(c.Args[0])))
+		}
+
+		//
+		// for v in iterator
+		//
+		//if lenExpr(target) <= 1 {
+		//    return jen.For(jen.List(jen.Op("_"), s.goExpr(target)).Op(":=").Range().Add(s.goExpr(iter)))
+		//}
 	}
 
 	// for x in iterable
-	return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(iter)))
+	// for k, v in dict
+	// for a,b,c in tuple iterable
+
+	switch lenExpr(target) {
+	case 0:
+		log.Fatalf("for without target: %#v", target)
+
+	case 1:
+		return jen.For(jen.List(jen.Op("_"), s.goExpr(target)).Op(":=").Range().Add(s.goExpr(iter)))
+
+	case 2:
+		return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(iter)))
+
+	default:
+		t := target.(*ast.Tuple)
+		return jen.For(jen.Id("_t").Commentf("/* %s */", s.strExprList(t.Elts)).Op(":=").Range().Add(s.goExpr(iter)))
+	}
+
+	return nil // shouldn't get here
 }
 
 func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement, *jen.Statement) {
