@@ -379,6 +379,15 @@ func (s *Scope) goIdentifiers(l []ast.Identifier) *jen.Statement {
 	})
 }
 
+func (s *Scope) strIdentifiers(l []ast.Identifier) string {
+	var sx []string
+	for _, i := range l {
+		sx = append(sx, string(i))
+	}
+
+	return strings.Join(sx, ",")
+}
+
 func (s *Scope) goInitialized(otype *jen.Statement, values []ast.Expr) *jen.Statement {
 	return jen.Parens(otype.Clone().ValuesFunc(func(g *jen.Group) {
 		for _, v := range values {
@@ -1244,10 +1253,10 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			}
 
 		case *ast.Global:
-			s.Add(jen.Commentf("global %v", s.goIdentifiers(v.Names).GoString()))
+			s.Add(jen.Commentf("global %v", s.strIdentifiers(v.Names)))
 
 		case *ast.Nonlocal:
-			s.Add(jen.Commentf("nonlocal %v", s.goIdentifiers(v.Names).GoString()))
+			s.Add(jen.Commentf("nonlocal %v", s.strIdentifiers(v.Names)))
 
 		case *ast.Delete:
 			for _, t := range v.Targets {
