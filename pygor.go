@@ -23,8 +23,6 @@ var (
 	mainpackage  bool
 
 	gokeywords = map[string]string{
-		"func": "funcΠ",
-
 		// Convert python names to pygor names
 		"str":     "string",
 		"float":   "float64",
@@ -40,7 +38,24 @@ var (
 		"Tuple": "TupleΠ",
 
 		// these are go keywords that need to be renamed
-		"type": "typeΠ",
+		"case":        "caseΠ",
+		"chan":        "chanΠ",
+		"const":       "constΠ",
+		"default":     "defaultΠ",
+		"defer":       "deferΠ",
+		"fallthrough": "fallthroughΠ",
+		"func":        "funcΠ",
+		"go":          "goΠ",
+		"goto":        "gotoΠ",
+		"interface":   "interfaceΠ",
+		"map":         "mapΠ",
+		"package":     "packageΠ",
+		"range":       "rangeΠ",
+		"select":      "selectΠ",
+		"struct":      "structΠ",
+		"switch":      "switchΠ",
+		"type":        "typeΠ",
+		"var":         "varΠ",
 	}
 
 	goAny       = jen.Qual("github.com/raff/pygor/runtime", "Any")
