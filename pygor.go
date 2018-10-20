@@ -819,6 +819,8 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 		case "strip":
 			if len(call.Args) == 0 {
 				return jen.Qual("strings", "TrimSpace").Call(s.goExpr(ff.Value))
+			} else if len(call.Args) == 1 {
+				return jen.Qual("strings", "Trim").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
 			}
 
 		case "split":
