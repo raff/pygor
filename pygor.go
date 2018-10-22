@@ -437,7 +437,7 @@ func isNone(expr ast.Expr) bool {
 }
 
 func (s *Scope) gomprehension(c ast.Comprehension) (*jen.Statement, *jen.Statement) {
-	iter := s.goFor(c.Target, c.Iter)
+	iter, _ := s.goFor(c.Target, c.Iter)
 	cond := iter
 	if len(c.Ifs) > 0 {
 		ccond := s.goExpr(c.Ifs[0])
@@ -887,7 +887,7 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 	return cfunc.Call(args...)
 }
 
-func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
+func (s *Scope) goFor(target, iter ast.Expr) (*jen.Statement, []ast.Expr) {
 	if c, ok := iter.(*ast.Call); ok { // check for "for x in range(n)"
 		//
 		// for x in range(y)
@@ -917,21 +917,21 @@ func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 
 			return jen.For(t.Clone().Op(":=").Add(start),
 				t.Clone().Op("<").Add(stop),
-				t.Clone().Op("+=").Add(step))
+				t.Clone().Op("+=").Add(step)), nil
 		}
 
 		//
 		// for i, v in enumerate(l)
 		//
 		if n, ok := c.Func.(*ast.Name); ok && string(n.Id) == "enumerate" && len(c.Args) == 1 {
-			return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(c.Args[0])))
+			return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(c.Args[0]))), nil
 		}
 
 		//
 		// for v in iterator
 		//
 		//if lenExpr(target) <= 1 {
-		//    return jen.For(jen.List(jen.Op("_"), s.goExpr(target)).Op(":=").Range().Add(s.goExpr(iter)))
+		//    return jen.For(jen.List(jen.Op("_"), s.goExpr(target)).Op(":=").Range().Add(s.goExpr(iter))), nil
 		//}
 	}
 
@@ -944,17 +944,17 @@ func (s *Scope) goFor(target, iter ast.Expr) *jen.Statement {
 		log.Fatalf("for without target: %#v", target)
 
 	case 1:
-		return jen.For(jen.List(jen.Op("_"), s.goExpr(target)).Op(":=").Range().Add(s.goExpr(iter)))
+		return jen.For(jen.List(jen.Op("_"), s.goExpr(target)).Op(":=").Range().Add(s.goExpr(iter))), nil
 
 	case 2:
-		return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(iter)))
+		return jen.For(s.goExprOrList(target).Op(":=").Range().Add(s.goExpr(iter))), nil
 
 	default:
 		t := target.(*ast.Tuple)
-		return jen.For(jen.Id("_t").Commentf("/* %s */", s.strExprList(t.Elts)).Op(":=").Range().Add(s.goExpr(iter)))
+		return jen.For(jen.Id("_t").Commentf("/* %s */", s.strExprList(t.Elts)).Op(":=").Range().Add(s.goExpr(iter))), t.Elts
 	}
 
-	return nil // shouldn't get here
+	return nil, nil // shouldn't get here
 }
 
 func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement, *jen.Statement) {
@@ -1224,7 +1224,16 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 
 		case *ast.For:
 			ss := s.Push()
-			stmt := ss.goFor(v.Target, v.Iter).Block(ss.parseBody("", v.Body))
+			stmt, targets := ss.goFor(v.Target, v.Iter)
+			assgn := jen.Null()
+			if targets != nil {
+				assgn = ss.goExprList(targets).Op(":=").ListFunc(func(g *jen.Group) {
+					for i := range targets {
+						g.Add(jen.Id("_t").Index(jen.Lit(i)))
+					}
+				})
+			}
+			stmt.Block(assgn, ss.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
 				stmt.Else().Block(ss.parseBody("", v.Orelse))
 			}
