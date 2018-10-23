@@ -22,6 +22,7 @@ for a, b, c in [(1,2,3), (4,5,6)]:
     a = a + 1
     b = b * 2
     c = c / 3
+    d = a + b + c
     print(a,"x",b,"x",c)
 
 while True:
