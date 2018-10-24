@@ -625,6 +625,9 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 		}
 
 		switch {
+		case b == "sys" && a == "args":
+			return jen.Qual("os", "Args")
+
 		case b == "sys" && a == "stdin":
 			return jen.Qual("os", "Stdin")
 
