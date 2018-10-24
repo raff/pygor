@@ -37,6 +37,9 @@ var (
 		"List":  "ListΠ",
 		"Tuple": "TupleΠ",
 
+		// these are standard package names we may want to preserve
+		"fmt": "fmtΠ",
+
 		// these are go keywords that need to be renamed
 		"case":        "caseΠ",
 		"chan":        "chanΠ",
@@ -60,12 +63,14 @@ var (
 
 	goRuntime = "github.com/raff/pygor/runtime"
 
-	goAny       = jen.Qual(goRuntime, "Any")
-	goList      = jen.Qual(goRuntime, "List")
-	goTuple     = jen.Qual(goRuntime, "Tuple")
-	goDict      = jen.Qual(goRuntime, "Dict")
-	goException = jen.Qual(goRuntime, "PyException")
-	goContains  = jen.Qual(goRuntime, "Contains")
+	goAny             = jen.Qual(goRuntime, "Any")
+	goList            = jen.Qual(goRuntime, "List")
+	goTuple           = jen.Qual(goRuntime, "Tuple")
+	goDict            = jen.Qual(goRuntime, "Dict")
+	goAssert          = jen.Qual(goRuntime, "Assert")
+	goContains        = jen.Qual(goRuntime, "Contains")
+	goException       = jen.Qual(goRuntime, "PyException")
+	goRaisedException = jen.Qual(goRuntime, "RaisedException")
 )
 
 func rename(s string) string {
@@ -1042,19 +1047,19 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			s.imports[string(v.Module)] = string(v.Module)
 			for _, i := range v.Names {
 				if i.AsName != "" {
-					s.Add(jen.Commentf("import %v %q // %v", i.AsName, v.Module, i.Name))
+					s.Add(jen.Commentf("import %v %q // %v", i.AsName, v.Module, i.Name).Line())
 				} else {
-					s.Add(jen.Commentf("import %q // %v", v.Module, i.Name))
+					s.Add(jen.Commentf("import %q // %v", v.Module, i.Name).Line())
 				}
 			}
 
 		case *ast.Import:
 			for _, i := range v.Names {
 				if i.AsName != "" {
-					s.Add(jen.Commentf("import %s %q", i.AsName, i.Name))
+					s.Add(jen.Commentf("import %s %q", i.AsName, i.Name).Line())
 					s.imports[string(i.AsName)] = string(i.Name)
 				} else {
-					s.Add(jen.Commentf("import %q", i.Name))
+					s.Add(jen.Commentf("import %q", i.Name).Line())
 					s.imports[string(i.Name)] = string(i.Name)
 				}
 			}
@@ -1312,7 +1317,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			s.Add(stmt)
 
 		case *ast.Raise:
-			stmt := jen.Return(jen.Id("RaisedException").Call(s.goExpr(v.Exc)))
+			stmt := jen.Return(goRaisedException.Call(s.goExpr(v.Exc)))
 			if v.Cause != nil {
 				stmt.Commentf("cause: %v", s.goExpr(v.Cause).GoString())
 			}
@@ -1320,9 +1325,9 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 
 		case *ast.Assert:
 			if v.Msg != nil {
-				s.Add(jen.Id("Assert").Call(s.goExpr(v.Test), s.goExpr(v.Msg)))
+				s.Add(goAssert.Call(s.goExpr(v.Test), s.goExpr(v.Msg)))
 			} else {
-				s.Add(jen.Id("Assert").Call(s.goExpr(v.Test), jen.Lit("")))
+				s.Add(goAssert.Call(s.goExpr(v.Test), jen.Lit("")))
 			}
 
 		case *ast.Global:
