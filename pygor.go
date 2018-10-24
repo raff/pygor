@@ -617,10 +617,38 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 		return goId(v.Id)
 
 	case *ast.Attribute:
-		if n, ok := v.Value.(*ast.Name); ok && s.imports[string(n.Id)] != "" {
-			return jen.Qual(s.imports[string(n.Id)], string(v.Attr))
+		x, b, a := strAttribute(v)
+		a = rename(a)
+
+		if x != nil {
+			return s.goExpr(x).Dot(a)
 		}
-		return s.goExpr(v.Value).Dot(renameId(v.Attr))
+
+		switch {
+		case b == "sys" && a == "stdin":
+			return jen.Qual("os", "Stdin")
+
+		case b == "sys" && a == "stdout":
+			return jen.Qual("os", "Stdout")
+
+		case b == "sys" && a == "stderr":
+			return jen.Qual("os", "Stderr")
+
+		case b == "sys.stdin":
+			return jen.Qual("os", "Stdin").Dot(a)
+
+		case b == "sys.stdout":
+			return jen.Qual("os", "Stdout").Dot(a)
+
+		case b == "sys.stderr":
+			return jen.Qual("os", "Stderr").Dot(a)
+		}
+
+		if imp, ok := s.imports[b]; ok {
+			return jen.Qual(imp, a)
+		}
+
+		return jen.Id(b).Dot(a)
 
 	case *ast.Subscript:
 		return s.goSlice(v.Value, v.Slice)
@@ -681,29 +709,7 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 }
 
 func goId(id ast.Identifier) *jen.Statement {
-	s := string(id)
-
-	switch {
-	case s == "sys.stdin":
-		return jen.Qual("os", "Stdin")
-
-	case s == "sys.stdout":
-		return jen.Qual("os", "Stdout")
-
-	case s == "sys.stderr":
-		return jen.Qual("os", "Stderr")
-
-	case strings.HasPrefix(s, "sys.stdin."):
-		return jen.Qual("os", "Stdin").Id(s[10:])
-
-	case strings.HasPrefix(s, "sys.stdout."):
-		return jen.Qual("os", "Stdout").Id(s[11:])
-
-	case strings.HasPrefix(s, "sys.stderr."):
-		return jen.Qual("os", "Stderr").Id(s[11:])
-	}
-
-	return jen.Id(rename(s))
+	return jen.Id(rename(string(id)))
 }
 
 func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) (*jen.Statement, *ast.Arg) {
@@ -776,6 +782,27 @@ func (s *Scope) goFunctionArguments(args *ast.Arguments, skipReceiver bool) (*je
 	// XXX: what is arg.Defaults ?
 
 	return jen.List(params...), recv
+}
+
+func strAttribute(attr *ast.Attribute) (ast.Expr, string, string) {
+	var expr ast.Expr
+	var base string
+
+	switch v := attr.Value.(type) {
+	case *ast.Attribute:
+		_, b, a := strAttribute(v)
+		base = b + "." + a
+		expr = nil
+
+	case *ast.Name:
+		base = string(v.Id)
+		expr = nil
+
+	default:
+		expr = attr.Value
+	}
+
+	return expr, base, string(attr.Attr)
 }
 
 func (s *Scope) goCallParams(params ...ast.Expr) *jen.Statement {
