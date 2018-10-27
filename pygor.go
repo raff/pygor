@@ -625,6 +625,12 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 		}
 
 		switch {
+		case b == "re" && a == "compile":
+			return jen.Qual("regexp", "MustCompile")
+
+		case b == "re" && a == "match":
+			return jen.Qual("regexp", "MatchString")
+
 		case b == "sys" && a == "argv":
 			return jen.Qual("os", "Args")
 
@@ -892,6 +898,31 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 		case "join":
 			if len(call.Args) == 1 {
 				return jen.Qual("strings", "Join").Call(s.goExpr(call.Args[0]), s.goExpr(ff.Value))
+			}
+
+		case "isspace":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "IsSpace").Call(s.goExpr(ff.Value))
+			}
+
+		case "isalpha":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "IsAlpha").Call(s.goExpr(ff.Value))
+			}
+
+		case "isdigit", "isnumeric":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "IsDigit").Call(s.goExpr(ff.Value))
+			}
+
+		case "isupper":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "IsUpper").Call(s.goExpr(ff.Value))
+			}
+
+		case "islower":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "IsLower").Call(s.goExpr(ff.Value))
 			}
 		}
 
