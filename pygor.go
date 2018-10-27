@@ -867,6 +867,12 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 		case "items": // as in `for k, v in dict(a=1).items()`
 			return s.goExpr(ff.Value) // remove items
 
+		case "append":
+			if len(call.Args) == 1 {
+				return s.goExpr(ff.Value).Op("=").Id("append").
+					Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
+			}
+
 		case "upper":
 			return jen.Qual("strings", "ToUpper").Call(s.goExpr(ff.Value))
 
