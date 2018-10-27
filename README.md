@@ -4,7 +4,10 @@ Python to Go Regurgitator
     Dr. Frederick Frankenstein: You must be Igor. [he pronounces it ee-gor.]
     Igor: No, it's pronounced "eye-gor."
 
-A Python 3 to Go transpiler, with many things to be desired.
+A Python 3 to Go transpiler, with many things to be desired. The purpose of this tool is not to do a complete
+working translation from Python to Go, but to do a good first pass into "readable" Go. But there is some effort
+to convert some "pythonism" into working Go (list/dict comprehension, generators, etc.) and to convert common
+library calls to Go equivalents.
 
 Note that the parser is currently targeted to Python 3.4 so some latest Python 3 additions are not supported (yet)
 and are reported as parsing errors.
