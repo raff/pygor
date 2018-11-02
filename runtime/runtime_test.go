@@ -144,3 +144,22 @@ func TestIsLower(t *testing.T) {
 		t.Error("empty string is not lower")
 	}
 }
+
+func TestReverse(t *testing.T) {
+	l := List{1, 2, 3, 4, 5, 6, 7, 8, 9}
+	r := List{9, 8, 7, 6, 5, 4, 3, 2, 1}
+	Reverse(l)
+
+	for i, n := range l {
+		if r[i] != n {
+			t.Error("incorrect reverse")
+		}
+	}
+}
+
+func TestSplits(t *testing.T) {
+	parts := Splits("hello there   a\t more\n\r here")
+	if len(parts) != 5 {
+		t.Error("incorrect split")
+	}
+}

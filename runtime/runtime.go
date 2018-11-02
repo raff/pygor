@@ -1,6 +1,7 @@
 package runtime
 
 import "fmt"
+import "regexp"
 import "strings"
 import "unicode"
 
@@ -137,4 +138,38 @@ func IsLower(s string) bool {
 	}
 
 	return islower
+}
+
+//
+// Trim spaces on the left
+//
+func TrimLeft(s string) string {
+	return strings.TrimLeftFunc(s, unicode.IsSpace)
+}
+
+//
+// Trim spaces on the right
+//
+func TrimRight(s string) string {
+	return strings.TrimLeftFunc(s, unicode.IsSpace)
+}
+
+var spaces = regexp.MustCompile("\\s+")
+
+func Splits(s string) []string {
+	return spaces.Split(s, -1)
+}
+
+//
+// Reverse list in place
+//
+func Reverse(l List) {
+	left := 0
+	right := len(l) - 1
+
+	for left < right {
+		l[left], l[right] = l[right], l[left]
+		left += 1
+		right -= 1
+	}
 }

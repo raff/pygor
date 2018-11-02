@@ -896,14 +896,52 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 				return jen.Qual("strings", "Trim").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
 			}
 
+		case "lstrip":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "TrimLeft").Call(s.goExpr(ff.Value))
+			} else if len(call.Args) == 1 {
+				return jen.Qual("strings", "TrimLeft").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
+			}
+
+		case "rstrip":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "TrimRight").Call(s.goExpr(ff.Value))
+			} else if len(call.Args) == 1 {
+				return jen.Qual("strings", "TrimRight").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
+			}
+
 		case "split":
-			if len(call.Args) == 1 {
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "Splits").Call(s.goExpr(ff.Value))
+			} else if len(call.Args) == 1 {
 				return jen.Qual("strings", "Split").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
+			} else if len(call.Args) == 2 {
+				return jen.Qual("strings", "SplitN").Call(s.goExpr(ff.Value),
+					s.goExpr(call.Args[0]),
+					s.goExpr(call.Args[1]).Op("+").Lit(1))
 			}
 
 		case "join":
 			if len(call.Args) == 1 {
 				return jen.Qual("strings", "Join").Call(s.goExpr(call.Args[0]), s.goExpr(ff.Value))
+			}
+
+		case "replace":
+			if len(call.Args) == 2 {
+				return jen.Qual("strings", "Replace").Call(s.goExpr(ff.Value),
+					s.goExpr(call.Args[0]),
+					s.goExpr(call.Args[1]),
+					jen.Lit(-1))
+			} else if len(call.Args) == 3 {
+				return jen.Qual("strings", "Replace").Call(s.goExpr(ff.Value),
+					s.goExpr(call.Args[0]),
+					s.goExpr(call.Args[1]),
+					s.goExpr(call.Args[2]))
+			}
+
+		case "count":
+			if len(call.Args) == 1 {
+				return jen.Qual("strings", "Count").Call(s.goExpr(ff.Value), s.goExpr(call.Args[0]))
 			}
 
 		case "isspace":
@@ -929,6 +967,11 @@ func (s *Scope) goCall(call *ast.Call) *jen.Statement {
 		case "islower":
 			if len(call.Args) == 0 {
 				return jen.Qual(goRuntime, "IsLower").Call(s.goExpr(ff.Value))
+			}
+
+		case "reverse":
+			if len(call.Args) == 0 {
+				return jen.Qual(goRuntime, "Reverse").Call(s.goExpr(ff.Value))
 			}
 		}
 
