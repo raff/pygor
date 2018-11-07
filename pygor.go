@@ -27,6 +27,9 @@ var (
 		"str":     "string",
 		"float":   "float64",
 		"complex": "complex128",
+
+                // XXX: these should actually be converted to runtime.Dict, runtime.List...
+                // and renamed if used as "attributes" (i.e. self.dict) or parameter name
 		"dict":    "Dict",
 		"list":    "List",
 		"tuple":   "Tuple",
@@ -441,6 +444,16 @@ func isNone(expr ast.Expr) bool {
 	}
 
 	return false
+}
+
+func isTuple(expr ast.Expr) bool {
+	_, ok := expr.(*ast.Tuple)
+	return ok
+}
+
+func isList(expr ast.Expr) bool {
+	_, ok := expr.(*ast.List)
+	return ok
 }
 
 func exprIds(expr ast.Expr) (ids []ast.Identifier) {
@@ -1119,8 +1132,8 @@ func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement, *j
 		}
 	}
 
-	if len(assign.Targets) == 1 {
-		return s.goExprOrList(assign.Targets[0]), s.goExprOrList(assign.Value), goType
+	if len(assign.Targets) == 1 && (isTuple(assign.Targets[0]) || isList(assign.Targets[0])) {
+		    return s.goExprOrList(assign.Targets[0]), s.goExprOrList(assign.Value), goType
 	}
 
 	return s.goExpr(assign.Targets), s.goExpr(assign.Value), goType
