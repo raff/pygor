@@ -28,11 +28,11 @@ var (
 		"float":   "float64",
 		"complex": "complex128",
 
-                // XXX: these should actually be converted to runtime.Dict, runtime.List...
-                // and renamed if used as "attributes" (i.e. self.dict) or parameter name
-		"dict":    "Dict",
-		"list":    "List",
-		"tuple":   "Tuple",
+		// XXX: these should actually be converted to runtime.Dict, runtime.List...
+		// and renamed if used as "attributes" (i.e. self.dict) or parameter name
+		"dict":  "Dict",
+		"list":  "List",
+		"tuple": "Tuple",
 
 		// these are not go keywords but they are used by pygor
 		"Any":   "AnyΠ",
@@ -372,7 +372,11 @@ func (s *Scope) goSlice(name ast.Expr, value ast.Slicer) *jen.Statement {
 		stmt.Add(jen.Index(start, end))
 
 	case *ast.Index:
-		stmt.Add(jen.Index(s.goExpr(sl.Value)))
+		if unary, ok := sl.Value.(*ast.UnaryOp); ok && unary.Op == ast.USub { // -x
+			stmt.Add(jen.Index(jen.Len(s.goExpr(name)).Op("-").Add(s.goExpr(unary.Operand))))
+		} else {
+			stmt.Add(jen.Index(s.goExpr(sl.Value)))
+		}
 
 	case *ast.ExtSlice:
 		panic("ExtSlice not implemented")
@@ -1133,7 +1137,7 @@ func (s *Scope) goAssign(assign *ast.Assign) (*jen.Statement, *jen.Statement, *j
 	}
 
 	if len(assign.Targets) == 1 && (isTuple(assign.Targets[0]) || isList(assign.Targets[0])) {
-		    return s.goExprOrList(assign.Targets[0]), s.goExprOrList(assign.Value), goType
+		return s.goExprOrList(assign.Targets[0]), s.goExprOrList(assign.Value), goType
 	}
 
 	return s.goExpr(assign.Targets), s.goExpr(assign.Value), goType
