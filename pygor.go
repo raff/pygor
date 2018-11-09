@@ -358,13 +358,21 @@ func (s *Scope) goSlice(name ast.Expr, value ast.Slicer) *jen.Statement {
 	start := jen.Empty()
 	end := jen.Empty()
 
+	exprval := func(name, val ast.Expr) *jen.Statement {
+		if unary, ok := val.(*ast.UnaryOp); ok && unary.Op == ast.USub { // -x
+			return jen.Len(s.goExpr(name)).Op("-").Add(s.goExpr(unary.Operand))
+		} else {
+			return s.goExpr(val)
+		}
+	}
+
 	switch sl := value.(type) {
 	case *ast.Slice:
 		if sl.Lower != nil {
-			start = s.goExpr(sl.Lower)
+			start = exprval(name, sl.Lower)
 		}
 		if sl.Upper != nil {
-			end = s.goExpr(sl.Upper)
+			end = exprval(name, sl.Upper)
 		}
 		if sl.Step != nil {
 			panic("step index not implemented")
@@ -372,11 +380,7 @@ func (s *Scope) goSlice(name ast.Expr, value ast.Slicer) *jen.Statement {
 		stmt.Add(jen.Index(start, end))
 
 	case *ast.Index:
-		if unary, ok := sl.Value.(*ast.UnaryOp); ok && unary.Op == ast.USub { // -x
-			stmt.Add(jen.Index(jen.Len(s.goExpr(name)).Op("-").Add(s.goExpr(unary.Operand))))
-		} else {
-			stmt.Add(jen.Index(s.goExpr(sl.Value)))
-		}
+		stmt.Add(jen.Index(exprval(name, sl.Value)))
 
 	case *ast.ExtSlice:
 		panic("ExtSlice not implemented")
