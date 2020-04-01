@@ -142,7 +142,7 @@ type Scope struct {
 	level   int // nesting level
 	vars    map[string]struct{}
 	imports map[string]string
-        main    bool
+	main    bool
 
 	file *jen.File
 
@@ -376,6 +376,10 @@ func (s *Scope) goSlice(name ast.Expr, value ast.Slicer) *jen.Statement {
 			end = exprval(name, sl.Upper)
 		}
 		if sl.Step != nil {
+			// if sl.Lower==nil && sl.Upper==nil && sl.Step == -1
+			// it would be a reverse slice, not that we can easily do it
+
+			log.Printf("at %v:%v", value.GetLineno(), value.GetColOffset())
 			panic("step index not implemented")
 		}
 		stmt.Add(jen.Index(start, end))
@@ -383,7 +387,8 @@ func (s *Scope) goSlice(name ast.Expr, value ast.Slicer) *jen.Statement {
 	case *ast.Index:
 		stmt.Add(jen.Index(exprval(name, sl.Value)))
 
-	case *ast.ExtSlice:
+	case *ast.ExtSlice: // start:stop:step
+		log.Printf("at %v:%v", value.GetLineno(), value.GetColOffset())
 		panic("ExtSlice not implemented")
 	}
 
@@ -581,6 +586,7 @@ func (s *Scope) goExpr(expr interface{}) *jen.Statement {
 			return jen.Lit(complex128(n))
 
 		default:
+			log.Printf("number %v at %v:%v", v.N, v.GetLineno(), v.GetColOffset())
 			panic("invalid number")
 		}
 
@@ -1081,6 +1087,7 @@ func (s *Scope) goFor(target, iter ast.Expr) (*jen.Statement, []ast.Expr) {
 		//
 		if n, ok := c.Func.(*ast.Name); ok && string(n.Id) == "range" {
 			if len(c.Args) < 1 || len(c.Args) > 3 {
+				log.Printf("at %v:%v", iter.GetLineno(), iter.GetColOffset())
 				panic("range expects 1 to 3 arguments")
 			}
 
@@ -1277,22 +1284,23 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			s.Add(stmt)
 
 		case *ast.ClassDef:
-			/***********************************
-			  Here we should be expecting only:
-
-			  - pass (and nothing else)
-			  - string: should be a __doc__ string
-			  - assignments (class variable)
-			  - function definition (class methods)
-
-			  Anything else should be an error.
-
-			  So, we could convert:
-			  - pass: empty struct (done)
-			  - string: add comment to struct body
-			  - assignements: struct fields (with value in comment)
-			  - class methods: parse body and add to most outer scope
-			  ***********************************/
+			//
+                        // Here we should be expecting only:
+                        //
+                        // - pass (and nothing else)
+                        // - string: should be a __doc__ string
+                        // - assignments (class variable)
+                        // - function definition (class methods)
+                        // Anything else should be an error.
+                        // So, we could convert:
+                        // - pass: empty struct (done)
+                        // - string: add comment to struct body
+                        // - assignements: struct fields (with value in comment)
+                        // - class methods: parse body and add to most outer scope
+                        //
+                        // NOTE that Python also allow class definitions inside a class definition
+                        // (and probably more)
+                        //
 
 			ss := s.Push()
 
@@ -1401,7 +1409,7 @@ func (s *Scope) parseBody(classname string, body []ast.Stmt) *jen.Statement {
 			stmt := jen.If(s.goExpr(v.Test))
 			if s.Top() && isNameMain(v.Test) && len(v.Orelse) == 0 {
 				stmt = jen.Func().Id("main").Params()
-                                s.main = true
+				s.main = true
 			}
 			stmt.Block(ss.parseBody("", v.Body))
 			if len(v.Orelse) > 0 {
@@ -1595,6 +1603,7 @@ func main() {
 		f := jen.NewFile(pname)
 
 		scope := NewScope(f)
+		//scope.file.ImportAlias(goRuntime, ".")
 		scope.parseBody("", m.Body)
 
 		if scope.main {
@@ -1607,7 +1616,7 @@ func main() {
 		scope.file.RenderImports(os.Stdout)
 
 		stmts := append(scope.body, jen.Line())
-		f.ImportDot(goRuntime)
+		scope.file.ImportAlias(goRuntime, ".")
 
 		for _, s := range stmts {
 			if err := s.Render(os.Stdout); err != nil {

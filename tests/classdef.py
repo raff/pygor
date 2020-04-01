@@ -12,4 +12,10 @@ class test(object):
 
     def printn(self, x):
         print(self.n * x)
+
+    #
+    # this is currently not supported
+    #
+    #class nested(object):
+    #    pass
         
